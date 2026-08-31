@@ -77,9 +77,13 @@ run_loop st ns aux btp m fb scr n =
     let _ = if n % print_every == 0 then
         let mtot = total_mass ns m
         let vmax = mv_vmax_probe ns m
+        -- observables in the print so plateau vs drift is visible mid-run
+        let ptip = 1.0 * mv_pressure ns 10 mp_i_tip1
+        let pw = 1.0 * mv_pressure ns mp_nrm2 1
         print (cat ["  step ", show (run_nsteps - n), "  t=", show_float (float_arr_get aux 1),
                     "  dt=", show_float dt, "  mass=", show_float mtot,
-                    "  vmax=", show_float vmax])
+                    "  vmax=", show_float vmax, "  ptip=", show_float ptip,
+                    "  pwall=", show_float pw])
       else 0
     run_loop ns st aux btp m fb scr (n - 1)
 
