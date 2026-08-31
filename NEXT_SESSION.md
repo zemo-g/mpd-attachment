@@ -1,13 +1,14 @@
-# Next session: conservative-in-r transport, then converge for real
+# Next session: converge the cold conservative run, then judge vs Cory
 
-State as of 2026-08-31 night: README Status is current. Phases 0/1/1b
-done. **Implicit resistivity is CLOSED** (Thomas per line, physical
-Spitzer eta, unconditionally stable; identity ~1e-4 through every regime
-visited, floor never fires, Hall smoke PASS). **Inlet metering is CLOSED**
-(flux-metered ghost; audit reads 0.00599999.. on the live state). What
-those two exposed is the new gate:
+State as of 2026-08-31 late night: README Status is current. Phases
+0/1/1b done. Three solver gates CLOSED the same day: **implicit
+resistivity** (Thomas per line, physical Spitzer eta, identity ~1e-4
+through every regime, Hall smoke PASS), **inlet metering** (flux-metered
+ghost, audit reads 0.00599999.. live), and **interior mass conservation**
+(greenlit and SHIPPED, commit f0f7fb8 - see below). The cold
+conservative run is chaining toward the true 6 g/s steady state.
 
-## Priority 1 - THE GATE: interior mass creation (needs a greenlight on approach)
+## CLOSED 2026-08-31 night: interior mass creation (kept for the record)
 
 **Evidence.** `rail/phase2_massaudit.rail` decomposes boundary mass flux
 with the scheme's own face-flux form (validated: reproduces the run's
@@ -24,36 +25,44 @@ dr/r = 2), amplified by 1/dt when the state is violent (the LxF
 diffusive velocity is dx/4dt). No steady state computed on this scheme
 is a mass balance; convergence chasing is pointless until this closes.
 
-**Approach (b) - recommended: area-weight the r-transport.** Keep the
-state unweighted; multiply r-face fluxes by r_face/r_cell and replace
-the quarter-average's r-neighbors with (r_nb/r_cell)-weighted averages;
-mass geometric source then DROPS (it is the continuum residue of exactly
-this weighting); re-derive the m_r hoop source in the weighted form
-(p_t appears with + sign, B^2/mu0 stays), m_z/E sources drop too.
-Localized to mv_flux_r/mv_lxf_field/mv_geom_src; conserves mass/m_z/E to
-machine precision; m_r keeps a true source (fine, momentum has one).
-**Approach (a): full rewrite in r-weighted conserved variables (rU).**
-Same algebra made structural; more invasive, same result. Either way:
-re-validate the stress identity and per-surface splits, add a selftest
-check (uniform-state + solid-body-ish field must conserve total mass to
-1e-12 over N steps - the same-day mechanism for this defect), and
-COLD-START a metered run (do not relax from the polluted seg-4 state).
-An audit run's "net" line must then match the run's dm/dt trend - that
-comparison is the standing gate (if two things must agree, something
-must compare them).
+**The fix as shipped (approach b, refined):** fields 0..3 update in
+face-flux form on the conserved r*U - every r-face flux is
+r_f [0.5(F_c+F_nb) - (dr/4dt)(U_nb-U_c)], update divided by r_j. So
+sum(r_j U_j) telescopes to the boundary EXACTLY; r_f = 0 kills the axis
+face automatically; r_f+ + r_f- = 2 r_j keeps the self-weight identical
+to the flat quarter-average (no stability change); every mirror-ghost /
+metered-inlet cancellation carries over. Geometric sources reduce to the
+exact residue: m_r gets +(p - B^2/2mu0)/r, mass/mz/E get none. bt stays
+FLAT (azimuthal induction dB/dt + d_r(vr B) + d_z(vz B) = 0 is a flat 2D
+law - do NOT area-weight it). Selftest check 26 is the mechanism: after
+a 50-step warm-up, one step's d(total mass) must equal dt * boundary
+rate (mv_bmass_rate); measured residual 1.6e-22 on dm 4.2e-13.
 
-## Priority 2: converge at true 6 g/s, judge everything at the plateau
+**Cold-start detonation found en route (also fixed):** the metered inlet
+ghost paired reflected momentum with the copied near-vacuum density
+(ghost vz ~ 3e5 m/s, invisible to mv_dt's fluid-only CFL scan) and blew
+the inlet row within steps. Ghost vz is now capped at in_vg_cap = 600
+m/s: the choked valve-opening transient; the cap disengages in the
+operating regime, where metering stays exact. Consequence: a cold start
+fills the chamber SLOWLY (the controller cannot force 6 g/s into
+vacuum) - expect O(100k) steps to quasi-steady.
 
-Cold-start post-fix, chain 40-60k segments (~50 ms/step on the Mini)
-until mass/vmax/ptip/pwall/mdot_out (all in the periodic print) settle.
-Then: tip/wall p vs Cory, backplate profile vs the phase-1b parabola
+## Priority 1: converge at true 6 g/s, judge everything at the plateau
+
+out/phase2_cold1.log is the first cold conservative segment (60k). Chain
+via run_resume (~50 ms/step on the Mini) until
+mass/vmax/ptip/pwall/mdot_out (all in the periodic print) settle. Then:
+tip/wall p vs Cory, backplate profile vs the phase-1b parabola
 (`tools/compare_bp_profile.py 8000`), T_exhaust vs ~25 N measured, and
-the mass audit. ALL pre-fix numbers (3.0% tip match included) ran at
-~8 g/s with a mass-creating interior and are void as validation. The
-solver is single-threaded; the M4 Mini is the fastest core in the fleet
-(Studio is for the parallel J-sweep, not single chains).
+`phase2_massaudit` (its net must match the run's dm/dt trend - that
+comparison is the standing gate). ALL pre-conservative numbers (3.0% tip
+match included) ran at ~8 g/s with a mass-creating interior and are void
+as validation. If the fill is too slow, a denser init (amb_rho up) is
+legitimate - the steady state does not depend on the init. The solver is
+single-threaded; the M4 Mini is the fastest core in the fleet (Studio is
+for the parallel J-sweep, not single chains).
 
-## Priority 3: Hall, for real (IMEX)
+## Priority 2: Hall, for real (IMEX)
 
 `run_hall = 1.0` still uses explicit curl-form Hall at whistler dt
 (~3e-13 s): hopeless for converged runs. Now that the Thomas machinery
@@ -66,7 +75,7 @@ fluid steps. Start with (b): it reuses the smoke harness gate and needs
 no new linear algebra; measure how far dt_hall can stretch before the
 identity drifts.
 
-## Priority 4: the J-sweep = Phase 2 sign-off
+## Priority 3: the J-sweep = Phase 2 sign-off
 
 8/10/12/14 kA at 6 g/s from converged states (current BCs handle
 J <= J_t2 = 14 kA; above that add the outer-face j_o prescription and
@@ -98,8 +107,9 @@ experiment-loop there.
   extrapolation): exact for linear profiles, O(dr^2) for curved ones.
   Selftest 22/25 encode which is which - don't "fix" 22 to be exact.
 - scr is 41861 floats (er 0 / ez 13780 / parr 27560 / fmass 41340 /
-  tridiagonal lanes 41341+). Every runner that calls mv_step must
-  allocate that size.
+  tridiagonal lanes 41341+) and fb is 25 (4 neighbor flux vectors + the
+  cell's own r-flux at offset 20). Every runner that calls mv_step must
+  allocate those sizes.
 
 ## Commands
 
@@ -111,7 +121,7 @@ $RAIL rail/phase2_run.rail && cp /tmp/rail_out /tmp/p2bin && /tmp/p2bin   # full
 $RAIL rail/phase2_hall_smoke.rail && cp /tmp/rail_out /tmp/hs && /tmp/hs  # needs ckpt
 $RAIL rail/phase2_identity.rail   # layer-0 diagnostics (always green)
 $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a  # boundary mass flux by family
-$RAIL rail/selftest.rail          # 25 checks
+$RAIL rail/selftest.rail          # 26 checks
 /opt/homebrew/bin/python3.11 tools/render_fields.py 8000 <tag>
 /opt/homebrew/bin/python3.11 tools/compare_bp_profile.py 8000
 ```

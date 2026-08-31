@@ -93,21 +93,28 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   draining at seg-3 end) - so **no observable from before the plateau is
   a validation number**. Segments chain via `run_resume` until mass,
   vmax, ptip, pwall, and mdot_out (all in the periodic print) settle.
-- **Interior mass creation - THE OPEN GATE (diagnosed 2026-08-31 night).**
-  Riding the post-fix relaxation exposed a second, deeper defect: on
-  seg 4 the boundary flux net was +2.0e-3 kg/s while the domain gained
-  ~8.8e-3 kg/s - **the interior scheme manufactures ~7e-3 kg/s** (more
-  than the physical inlet flow; cross-checked at +1.3e-3 on the milder
-  seg-2 state). The LxF quarter-average and unweighted r-fluxes are
-  non-conservative in r: O(dr/r) per cell (O(1) at the axis), amplified
-  by 1/dt in violent states. Numerics stayed clean throughout (identity
-  ~1e-4) - this is bookkeeping, not instability. No steady state on this
-  scheme is a mass balance. Fix candidates and the re-validation plan are
-  in NEXT_SESSION.md Priority 1 (recommended: area-weighted r-transport,
-  which also retires the mass/mz/E geometric sources). ALL validation
-  numbers to date are void (wrong mdot AND fake interior source); the
-  standing wins are the implicit-resistivity machinery, the metered
-  inlet, the audit tool, and the 25-check selftest.
+- **Interior mass creation - diagnosed AND CLOSED (2026-08-31 night,
+  commit f0f7fb8).** Riding the post-fix relaxation exposed the deeper
+  defect: on seg 4 the boundary flux net was +2.0e-3 kg/s while the
+  domain gained ~8.8e-3 kg/s - **the interior scheme manufactured
+  ~7e-3 kg/s** (more than the physical inlet flow). The LxF
+  quarter-average and unweighted r-fluxes were non-conservative in r:
+  O(dr/r) per cell, O(1) at the axis, amplified by 1/dt. Fix: fields
+  0..3 now update in face-flux form on the conserved r*U (every r-face
+  flux is r_f [0.5(F_c+F_nb) - (dr/4dt)(U_nb-U_c)]), so sum(r_j U_j)
+  telescopes to the boundary EXACTLY; r_f = 0 kills the axis face;
+  r_f+ + r_f- = 2 r_j keeps the self-weight identical to the flat
+  scheme; sources reduce to m_r += (p - B^2/2mu0)/r. bt stays flat
+  (azimuthal induction is a flat 2D law). Selftest check 26 is the
+  mechanism: one step's d(total mass) must equal dt * mv_bmass_rate
+  (measured residual 1.6e-22 on dm 4.2e-13). En route, cold starts
+  exposed the metered ghost's unbounded velocity on near-vacuum fluid
+  (ghost vz ~ 3e5 m/s, invisible to the fluid-only CFL scan) - now
+  capped at in_vg_cap = 600 m/s, the choked valve-opening transient;
+  metering stays exact in the operating regime. **ALL pre-conservative
+  validation numbers are void** (wrong mdot AND fake interior source);
+  the cold conservative run (out/phase2_cold1.log) is chaining toward
+  the first trustworthy steady state.
 
 ## Run
 
@@ -150,5 +157,5 @@ Regenerate the digitized points (needs poppler + py311 PIL/numpy):
 - `rail/pbt.rail` - PBT geometry, constants, Table 2 fits, baselines, Rudolph/Cory prescriptions
 - `rail/semi_lib.rail` / `rail/semi_model.rail` - Maxwell-stress decomposition (phase 1b)
 - `rail/phase0_scoreboard.rail` / `rail/phase1_baselines.rail` - runners
-- `rail/selftest.rail` - 25 transcription/data/scoreboard/model/phase2 guards
+- `rail/selftest.rail` - 26 transcription/data/scoreboard/model/phase2 guards
 - `out/` - generated CSVs (rebuilt by the runners)
