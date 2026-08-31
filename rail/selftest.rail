@@ -1,0 +1,84 @@
+-- rail/selftest.rail -- Phase 0/1 guards. Prints SELFTEST PASS or SELFTEST FAIL.
+-- Do not rely on the exit code (rail_native run historically swallowed it);
+-- callers grep the last line.
+--
+-- Guards:
+--   transcription of the Table 2 fits (spot values cross-checked against the
+--   JPP-2001 scatter plots by eye, tolerance covers the readout)
+--   the I_fi = J_ci coincidence check case from the program doc
+--   digitized fig-1 anchor points
+--   scoreboard output sanity
+
+import "rail/pbt.rail"
+
+near v target tol = fabs (v - target) < tol
+
+check name ok fails =
+  if ok then fails
+  else
+    let _ = print (cat ["  FAIL: ", name])
+    fails + 1
+
+-- count scoreboard rows and range-check C_T
+scan_rows lines n bad =
+  if lines == [] then [n, bad]
+  else
+    let line = head lines
+    let rest = tail lines
+    if line == "" then scan_rows rest n bad
+    else
+      let f = split "," line
+      let ct = parse_float (nth 4 f)
+      let sg = parse_float (nth 5 f)
+      let ok1 = if ct > 1.5 then ct < 8.0 else false
+      let ok = if ok1 then sg > 0.0 else false
+      scan_rows rest (n + 1) (if ok then bad else bad + 1)
+
+-- find a digitized 3 g/s point near (3238, 6.857)
+find_anchor lines =
+  if lines == [] then false
+  else
+    let line = head lines
+    if line == "" then find_anchor (tail lines)
+    else
+      let f = split "," line
+      let j = parse_float (nth 0 f)
+      let ct = parse_float (nth 1 f)
+      let hit1 = if near j 3238.0 60.0 then near ct 6.857 0.15 else false
+      if hit1 then true else find_anchor (tail lines)
+
+main =
+  let f0 = 0
+  -- geometry-derived constants
+  let f1 = check "maecker C_T = 2.4305" (near maecker_ct 2.4305 0.001) f0
+  -- program-doc check case: I_fi(argon, 660 mg/s, b=1.8e-7) ~ 5600 A,
+  -- same quantity as J_ci
+  let ifi = sqrt (0.00066 * uci_argon / 1.8e-7)
+  let f2 = check "I_fi check case ~5600 A" (near ifi 5600.0 100.0) f1
+  -- Table 2 transcription spot checks (values also validated against scatter)
+  let f3 = check "fit Ar1 T(6500)" (near (fit_t_ar1 6500.0) 8.2 0.6) f2
+  let f4 = check "fit Ar3 T(15000)" (near (fit_t_ar3 15000.0) 44.4 1.5) f3
+  let f5 = check "fit Ar6 T(20000)" (near (fit_t_ar6 20000.0) 82.8 1.5) f4
+  let f6 = check "fit Xe3 T(10000)" (near (fit_t_xe3 10000.0) 20.9 1.0) f5
+  let f7 = check "fit Xe6 T(20000)" (near (fit_t_xe6 20000.0) 82.0 2.0) f6
+  -- Xe6 a5 exponent regression guard (e-14 turns T(7500) negative)
+  let f8 = check "fit Xe6 T(7500) positive" (fit_t_xe6 7500.0 > 10.0) f7
+  -- xi relation: xi^2 INSIDE the log (outside gives 2.77 at xi=1, 6 g/s)
+  let f9 = check "choueiri_ct(6 g/s, xi=1) in 1.85..2.00"
+             (near (choueiri_ct 6.0 1.0) 1.925 0.075) f8
+  -- digitized data anchors
+  let raw = read_file "data/fig1_points.csv"
+  let dlines = tail (split "\n" raw)
+  let f10 = check "fig1 anchor (3238, 6.857)" (find_anchor dlines) f9
+  -- scoreboard sanity
+  let sraw = read_file "out/measured_ct.csv"
+  let slines = tail (split "\n" sraw)
+  let nb = scan_rows slines 0 0
+  let f11 = check "scoreboard >= 240 rows" (nth 0 nb >= 240) f10
+  let f12 = check "scoreboard C_T in (1.5, 8), sigma > 0" (nth 1 nb == 0) f11
+  if f12 == 0 then
+    let _ = print "SELFTEST PASS (12 checks)"
+    0
+  else
+    let _ = print (cat ["SELFTEST FAIL (", show f12, " of 12)"])
+    1

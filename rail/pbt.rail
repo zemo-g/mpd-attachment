@@ -1,0 +1,105 @@
+-- rail/pbt.rail -- Princeton Benchmark Thruster fixed test case.
+-- Phase 0 data module: geometry, constants, measured-thrust curve fits.
+--
+-- Sources:
+--   geometry            Choueiri IEPC-97-121, fig 3 caption
+--   T-vs-J curve fits   Choueiri & Ziemer, J. Prop. Power (AIAA-98-3472), table 2
+--   valid J ranges      read off the scatter plots (figs 8, 10), +-0.5 kA
+--   u_ci values         IEPC-97-121 eq 32
+
+-- Geometry (m)
+pbt_r_c = 0.0095
+pbt_r_a = 0.051
+pbt_r_ch = 0.064
+pbt_r_ao = 0.093
+pbt_t_a = 0.0095
+pbt_l_c = 0.10
+
+mu0_4pi = 0.0000001
+
+-- Critical ionization velocity (m/s)
+uci_argon = 8720.0
+uci_xenon = 4220.0
+
+ln_ra_rc = log (pbt_r_a / pbt_r_c)
+
+-- Maecker: C_T = ln(ra/rc) + 3/4, independent of J, mdot, propellant
+maecker_ct = ln_ra_rc + 0.75
+
+-- Critical ionization current (A); mdot in kg/s, first-order C_T = ln(ra/rc)
+j_ci mdot_kg uci = sqrt (mdot_kg * uci / (mu0_4pi * ln_ra_rc))
+
+-- Choueiri scaling, IEPC-97-121 eq 39: C_T = nu/xi^4 + ln(ra/rc + xi^2),
+-- nu = mdot / 66 g/s. NOTE: xi^2 sits INSIDE the log (the program doc's
+-- transcription put it outside; eq 36/37/39 of the paper are unambiguous,
+-- and outside-the-log over-predicts every high-current point by ~0.7).
+choueiri_ct mdot_g xi =
+  let nu = mdot_g / 66.0
+  nu / (xi * xi * xi * xi) + log (pbt_r_a / pbt_r_c + xi * xi)
+
+-- C_T from thrust: C_T = T / ((mu0/4pi) J^2)
+ct_of_thrust t j = t / (mu0_4pi * j * j)
+
+-- Table 2 thrust fits, T in N, J in A (Horner form).
+-- Fits are ONLY valid inside the stated J ranges: 4th-order polynomials
+-- explode outside their data.
+fit_t_ar1 j = 377.98 + j * (0.0 - 0.18079 + j * (3.1921e-5 + j * (0.0 - 2.4151e-9 + j * 6.7129e-14)))
+fit_t_ar3 j = 750.21 + j * (0.0 - 0.20133 + j * (2.0341e-5 + j * (0.0 - 8.8935e-10 + j * 1.4599e-14)))
+fit_t_ar6 j = 273.09 + j * (0.0 - 0.057856 + j * (4.6962e-6 + j * (0.0 - 1.5357e-10 + j * 1.98e-15)))
+fit_t_xe3 j = 0.0 - 731.65 + j * (0.26801 + j * (0.0 - 3.5734e-5 + j * (2.0942e-9 + j * (0.0 - 4.4838e-14))))
+fit_t_xe6 j = 0.0 - 133.15 + j * (0.046925 + j * (0.0 - 5.3777e-6 + j * (2.6879e-10 + j * (0.0 - 4.5162e-15))))
+
+-- Series index: 0=Ar1, 1=Ar3, 2=Ar6, 3=Xe3, 4=Xe6
+ser_count = 5
+
+ser_prop i =
+  if i <= 2 then "argon" else "xenon"
+
+ser_uci i =
+  if i <= 2 then uci_argon else uci_xenon
+
+ser_mdot_g i =
+  if i == 0 then 1.0
+  else if i == 1 then 3.0
+  else if i == 2 then 6.0
+  else if i == 3 then 3.0
+  else 6.0
+
+-- Valid ranges: lower ends trimmed to where each polynomial is monotone
+-- and tracks the scatter plot; below these the fits wiggle outside data.
+ser_jmin i =
+  if i == 0 then 6500
+  else if i == 1 then 10000
+  else if i == 2 then 11000
+  else if i == 3 then 8500
+  else 7500
+
+ser_jmax i =
+  if i == 0 then 12500
+  else if i == 1 then 21000
+  else if i == 2 then 24000
+  else if i == 3 then 15500
+  else 20500
+
+ser_fit_t i j =
+  if i == 0 then fit_t_ar1 j
+  else if i == 1 then fit_t_ar3 j
+  else if i == 2 then fit_t_ar6 j
+  else if i == 3 then fit_t_xe3 j
+  else fit_t_xe6 j
+
+ser_name i =
+  if i == 0 then "Ar 1 g/s"
+  else if i == 1 then "Ar 3 g/s"
+  else if i == 2 then "Ar 6 g/s"
+  else if i == 3 then "Xe 3 g/s"
+  else "Xe 6 g/s"
+
+-- Self-assigned error bars (documented in data/README.md):
+--   database fits: 5% of C_T (impulse measurement <2%, fit smoothing extra)
+--   fig 1 digitized points: 0.08 in C_T from pixel readout, plus 3% of C_T
+sigma_fit ct = 0.05 * ct
+sigma_dig ct = sqrt (0.0064 + 0.0009 * ct * ct)
+
+-- list helper (no lambdas in filter/map: named recursion only)
+nth n xs = if n == 0 then head xs else nth (n - 1) (tail xs)

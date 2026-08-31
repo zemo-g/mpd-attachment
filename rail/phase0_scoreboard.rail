@@ -1,0 +1,64 @@
+-- rail/phase0_scoreboard.rail -- Phase 0 deliverable: measured_CT(J, mdot, propellant)
+-- with self-assigned error bars, dumped to out/measured_ct.csv.
+--
+-- Two sources:
+--   jpp2001_fit  table-2 thrust fits sampled every 250 A inside their valid range
+--   fig1_digit   digitized IEPC-97-121 fig 1 points (data/fig1_points.csv,
+--                produced by tools/digitize_fig1.py)
+--
+-- Run from repo root: rail_native run rail/phase0_scoreboard.rail
+
+import "rail/pbt.rail"
+
+out_path = "out/measured_ct.csv"
+
+row_line src prop mdot j ct sg =
+  cat [src, ",", prop, ",", show_float mdot, ",", show j, ",", show_float ct, ",", show_float sg]
+
+-- Build rows for one fit series, tail-recursive over J
+fit_rows i j jmax acc =
+  if j > jmax then acc
+  else
+    let jf = to_float j
+    let t = ser_fit_t i jf
+    let ct = ct_of_thrust t jf
+    let line = row_line "jpp2001_fit" (ser_prop i) (ser_mdot_g i) j ct (sigma_fit ct)
+    fit_rows i (j + 250) jmax (cons line acc)
+
+all_fit_rows i acc =
+  if i >= ser_count then acc
+  else all_fit_rows (i + 1) (fit_rows i (ser_jmin i) (ser_jmax i) acc)
+
+-- Digitized fig-1 rows: parse data/fig1_points.csv (header J_A,C_T,mdot_g_s)
+dig_rows lines acc =
+  if lines == [] then acc
+  else
+    let line = head lines
+    let rest = tail lines
+    if line == "" then dig_rows rest acc
+    else
+      let f = split "," line
+      let j = parse_int (nth 0 f)
+      let ct = parse_float (nth 1 f)
+      let mdot = parse_float (nth 2 f)
+      let out = row_line "fig1_digit" "argon" mdot j ct (sigma_dig ct)
+      dig_rows rest (cons out acc)
+
+-- string -> int via float parser (to_int is float-only; J values are plain digits)
+parse_int s = to_int (parse_float s)
+
+count xs n = if xs == [] then n else count (tail xs) (n + 1)
+
+main =
+  let fitrows = reverse (all_fit_rows 0 [])
+  let raw = read_file "data/fig1_points.csv"
+  let dlines = tail (split "\n" raw)
+  let digrows = reverse (dig_rows dlines [])
+  let body = cat ["source,propellant,mdot_g_s,J_A,C_T,sigma\n",
+                  join "\n" fitrows, "\n", join "\n" digrows, "\n"]
+  let _ = write_file out_path body
+  let nf = count fitrows 0
+  let nd = count digrows 0
+  let _ = print (cat ["phase0: wrote ", out_path])
+  let _ = print (cat ["  fit rows: ", show nf, "  digitized rows: ", show nd])
+  0
