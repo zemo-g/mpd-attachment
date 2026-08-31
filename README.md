@@ -76,9 +76,27 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   preservation of B~r through the axis path and both Dirichlet folds,
   linear-z; c/r held to boundary order - the ghost fold is linear
   extrapolation, so curved profiles are O(dr^2) at faces, by design).
-  **Open:** converge to steady state (chain segments; then re-judge the
-  backplate profile vs the phase-1b parabola), Hall via IMEX/subcycling,
-  the J-sweep (phase 2 sign-off), then Phase 3 sheath BCs.
+- **Inlet was NOT metering 6 g/s (found + fixed 2026-08-31 night).**
+  `rail/phase2_massaudit.rail` decomposes the LxF mass flux across every
+  boundary face by surface family (the scheme's face flux is
+  0.5(F_c+F_g) - (dx/4dt)(rho_g-rho_c), so attribution is exact). On the
+  seg-2 state: walls leak exactly zero (mirror ghosts cancel both flux
+  halves), but the naive inlet Dirichlet ghost admitted **8.04e-3 kg/s
+  against 6.0e-3 nominal (1.34x)** - the face flux adds the fluid-side
+  momentum average and a rho-diffusion influx on top of what the ghost
+  declares. Every earlier "6 g/s" number was really ~8 g/s. The inlet is
+  now a mass-flow-controller ghost (rho copied from the fluid cell, mz
+  reflected around nominal, face flux exactly rho_in v_in); the audit is
+  the standing check (inlet row must read ~0.006). Correcting the BC set
+  off a large relaxation - the domain sheds the ~2.7x excess mass through
+  a damped breathing mode (tip p ringing 3563..4344 Pa, mass still
+  draining at seg-3 end) - so **no observable from before the plateau is
+  a validation number**. Segments chain via `run_resume` until mass,
+  vmax, ptip, pwall, and mdot_out (all in the periodic print) settle.
+  **Open:** ride out the relaxation to the true 6 g/s steady state, then
+  re-judge tip/wall/backplate-profile vs Cory and T vs measured; Hall via
+  subcycling/IMEX; the J-sweep (phase 2 sign-off); then Phase 3 sheath
+  BCs.
 
 ## Run
 
