@@ -31,14 +31,32 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   These surface integrals are the harness Phase 2's per-surface split
   check compares against; the inferred p(r_c, z0) curve is the published
   target Phase 3 must hit without being told.
-- Phase 2 (solver, attachment prescribed): not started. Recon: Rail stdlib
-  already has an axisym (r,z) core evolving B_theta (`stdlib/mhd_axisym.rail`)
-  plus an MPD source pack (`stdlib/mhd_mpd.rail`: 1/r geometry, hoop stress,
-  self-field JxB, Spitzer Ohmic). Missing for Phase 2: the Hall term,
-  electrode-attachment boundary conditions (feed Rudolph's j_i/j_lip/j_o in
-  as B_theta boundary values via Ampere), PBT geometry masking (backplate /
-  anode annulus / cathode as internal boundaries), and the Maxwell-stress
-  identity diagnostic.
+- **Phase 2 - solver, attachment prescribed: FIRST LIGHT (2026-08-31).**
+  `rail/mpd_solver.rail` (forked axisym core, attachment as B_theta
+  Dirichlet ghosts from `rail/mhd_pbt.rail`), 130x106 face-aligned grid.
+  20k-step run at 8 kA argon 6 g/s to t = 0.92 ms (~20 flow-throughs), in
+  the numerical-resistivity regime (explicit eta off; LxF diffusivity
+  ~0.5 v dx is the same order as Spitzer eta/mu0 at this grid). Checks:
+  - **stress identity: PASS**, T_vol/T_surf - 1 = 8.9e-4 (layer-0 machinery
+    validated at 1e-15 on analytic fields first)
+  - **per-surface blowing: PASS**, BP/AIF/CT match eqs 13/14/flat-tip to 0.1%
+  - **cathode-tip pressure: 2196 Pa vs Cory's 2104 (4.4%)** - the solver
+    reproduces the measured tip-pressure fit without being told it
+  - backplate profile: peaked at the cathode (1021 Pa vs 377 at the wall) -
+    the qualitative low-current mechanism; levels run ~40-60% of the
+    parabola inferred from measured thrust (`tools/compare_bp_profile.py`)
+  - T_exhaust 18.6 N vs ~24.6 N measured (76%); mdot_out 2x inlet (vacuum
+    floor still feeding some mass; not fully steady)
+  Images: `out/img/phase2_8ka_hero.png` (pressure + exact current
+  streamlines, mirrored section), `out/img/phase2_8ka_fields.png`;
+  renderer `tools/render_fields.py`. Pathological curl-eta state kept as
+  `*patho*` for the before/after record.
+  **Open for the next solver session:** energy-consistent explicit
+  resistivity (curl form is checkerboard-transparent and slowly diverges;
+  compact diffusion detonates at Dirichlet corners via quadratic ghost
+  feedback - both isolated by A/B, see commit 8864ef3), Hall-on run
+  (whistler dt ~100x), state checkpointing for run continuation, mass
+  budget accounting for the vacuum floor.
 
 ## Run
 
