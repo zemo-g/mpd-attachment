@@ -360,6 +360,32 @@ mv_bmax st m =
   let _ = mv_bmax_loop st m 0 acc
   float_arr_get acc 0
 
+-- vacuum guard: state density floor + velocity cap (rescale momenta).
+-- The pinch evacuates the near-cathode region; without this the Alfven
+-- speed there collapses dt. Mass added at the floor is bounded and
+-- reported nowhere near the surfaces the checks read.
+rho_min_state = 0.000001
+v_cap = 100000.0
+
+mv_floor_cell ns j i =
+  let rho = mp_get ns mp_f_rho j i
+  let _ = if rho < rho_min_state then mp_put ns mp_f_rho j i rho_min_state else 0.0
+  let rho2 = mp_get ns mp_f_rho j i
+  let mr = mp_get ns mp_f_mr j i
+  let mz = mp_get ns mp_f_mz j i
+  let v = sqrt ((mr * mr + mz * mz) / (rho2 * rho2))
+  if v > v_cap then
+    let sc = v_cap / v
+    let _ = mp_put ns mp_f_mr j i (mr * sc)
+    mp_put ns mp_f_mz j i (mz * sc)
+  else 0.0
+
+mv_floor_loop ns m ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then mv_floor_cell ns (ji / mp_nz) (ji % mp_nz) else 0
+    mv_floor_loop ns m (ji + 1)
+
 -- ── one full step: ghosts -> LxF -> geometry -> non-ideal induction ──
 -- ns and scratch are caller-owned and reused (no per-step allocation; the
 -- caller double-buffers st <-> ns). fb: 20-float flux scratch. scr: one
@@ -372,7 +398,8 @@ mv_step st ns btp m fb scr dt =
   let _ = mv_geom_loop st ns m dt 0
   let _ = mv_parr_loop st scr 0
   let _ = mv_efield_loop st scr 0 0
-  mv_induct_loop ns m scr dt 0
+  let _ = mv_induct_loop ns m scr dt 0
+  mv_floor_loop ns m 0
 
 scr_ez = 13780
 scr_parr = 27560
