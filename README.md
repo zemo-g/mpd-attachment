@@ -47,6 +47,7 @@ cd ~/projects/mpd-attachment
 RAIL=~/projects/rail/rail_native
 $RAIL run rail/phase0_scoreboard.rail --out-prefix /tmp/rail_mpd0
 $RAIL run rail/phase1_baselines.rail  --out-prefix /tmp/rail_mpd1
+$RAIL run rail/semi_model.rail        --out-prefix /tmp/rail_mpds
 $RAIL run rail/selftest.rail          --out-prefix /tmp/rail_mpdt   # expect SELFTEST PASS
 ```
 
