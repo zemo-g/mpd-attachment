@@ -142,14 +142,23 @@ mv_ghost_cell st btp m j i =
     let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
     mv_ghost_gas st j i j 1 1.0 (0.0 - 1.0) btg
   else if mk == 6 then
-    -- inlet: gas Dirichlet; bt face Dirichlet like every other boundary
-    let rho = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
+    -- inlet: FLUX-METERED gas ghost (mass audit 2026-08-31: the naive
+    -- rho/v Dirichlet ghost admitted 1.34x nominal - the LxF face flux
+    -- 0.5(F_c+F_g) - (dz/4dt)(rho_c-rho_g) adds the fluid-side momentum
+    -- average AND a rho-diffusion influx). Ghost rho copies the fluid
+    -- cell (kills the diffusive term); ghost mz reflects around the
+    -- nominal so the face average is EXACTLY rho_in v_in; en carries a
+    -- 300 K reservoir at the copied density.
+    let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
     let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
-    let ke = 0.5 * rho * in_v * in_v
+    let rho_c = mp_get st mp_f_rho j 1
+    let rho = if rho_c < rho_floor then rho_floor else rho_c
+    let mzg = 2.0 * rho_in * in_v - mp_get st mp_f_mz j 1
+    let ke = 0.5 * mzg * mzg / rho
     let me = 0.5 * btg * btg * inv_mu0
     let _ = mp_put st mp_f_rho j i rho
     let _ = mp_put st mp_f_mr j i 0.0
-    let _ = mp_put st mp_f_mz j i (rho * in_v)
+    let _ = mp_put st mp_f_mz j i mzg
     let _ = mp_put st mp_f_en j i (rho * kT_m / gamma_m1 + ke + me)
     mp_put st mp_f_bt j i btg
   else if mk == 7 then

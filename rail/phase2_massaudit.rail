@@ -1,0 +1,84 @@
+-- rail/phase2_massaudit.rail -- boundary mass-balance audit.
+-- Loads out/phase2_ckpt.f32, applies ghosts, and integrates the LxF mass
+-- flux (advective + diffusive) across every fluid/non-fluid face, binned
+-- by the neighbor's mask. The solver's quarter-average + central-flux
+-- update decomposes exactly into face fluxes
+--     Fhat = 0.5 (F_c + F_g) - (dx / 4 dt) (rho_g - rho_c)
+-- so this attributes the run's mass gain to specific surfaces (the
+-- diffusive half is a scheme artifact at walls: rho_ghost != rho_cell
+-- leaks mass at O(dx (rho_g - rho_c) / 4 dt)). The geometric source
+-- crosses no boundary and is rightly absent. dt is recomputed from the
+-- state exactly as the run would (attribution needs the run's own dt
+-- because the diffusive term carries 1/dt).
+--
+-- Run from the repo root: compile, copy the binary, run the copy.
+
+import "rail/pbt.rail"
+import "rail/mhd_pbt.rail"
+import "rail/mpd_solver.rail"
+
+run_hall = 0.0
+two_pi = 6.283185307179586
+
+-- accumulate the mass rate INTO the domain through the (dj,di) face of
+-- fluid cell (j,i), binned by neighbor mask; no-op for fluid neighbors
+ma_face st m acc dt j i dj di =
+  let mk = arr_get m ((j + dj) * mp_nz + i + di)
+  if mk == 0 then 0.0
+  else
+    let r = mp_r_of j
+    let vol = two_pi * r * mp_dr * mp_dz
+    let rc = mp_get st mp_f_rho j i
+    let rg = mp_get st mp_f_rho (j + dj) (i + di)
+    let rate = if dj == 0 then
+        let fc = mp_get st mp_f_mz j i
+        let fg = mp_get st mp_f_mz (j + dj) (i + di)
+        let fh = 0.5 * (fc + fg) - (mp_dz / (4.0 * dt)) * to_float di * (rg - rc)
+        (0.0 - to_float di) * fh * vol / mp_dz
+      else
+        let fc = mp_get st mp_f_mr j i
+        let fg = mp_get st mp_f_mr (j + dj) (i + di)
+        let fh = 0.5 * (fc + fg) - (mp_dr / (4.0 * dt)) * to_float dj * (rg - rc)
+        (0.0 - to_float dj) * fh * vol / mp_dr
+    float_arr_set acc mk (float_arr_get acc mk + rate)
+
+ma_loop st m acc dt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let j = ji / mp_nz
+        let i = ji % mp_nz
+        let _ = ma_face st m acc dt j i 1 0
+        let _ = ma_face st m acc dt j i (0 - 1) 0
+        let _ = ma_face st m acc dt j i 0 1
+        ma_face st m acc dt j i 0 (0 - 1)
+      else 0.0
+    ma_loop st m acc dt (ji + 1)
+
+ma_show acc k name =
+  print (cat ["  ", name, ": ", show_float (float_arr_get acc k), " kg/s"])
+
+main =
+  let jt = 0.0 + 8000.0
+  let m = mp_build_mask
+  let btp = mp_build_btp jt
+  let st = float_arr_new mp_state 0.0
+  let _ = mv_load_state "out/phase2_ckpt.f32" st
+  let _ = mv_apply_ghosts st btp m
+  let dt = 1.0 * mv_dt st m
+  let _ = print (cat ["mass audit of out/phase2_ckpt.f32 (dt=", show_float dt,
+                      "); rate INTO the domain per surface family:"])
+  let acc = float_arr_new 8 0.0
+  let _ = ma_loop st m acc dt 0
+  let _ = ma_show acc 6 "inlet (nominal 0.006)"
+  let _ = ma_show acc 5 "backplate wall"
+  let _ = ma_show acc 1 "cathode"
+  let _ = ma_show acc 2 "anode"
+  let _ = ma_show acc 4 "chamber wall"
+  let _ = ma_show acc 3 "axis (should be ~0)"
+  let _ = ma_show acc 7 "outflow (negative = leaving)"
+  let net1 = float_arr_get acc 1 + float_arr_get acc 2 + float_arr_get acc 3
+  let net2 = float_arr_get acc 4 + float_arr_get acc 5 + float_arr_get acc 6
+  let net = net1 + net2 + float_arr_get acc 7
+  let _ = print (cat ["  net d(mass)/dt = ", show_float net, " kg/s"])
+  0
