@@ -6,7 +6,14 @@ State as of 2026-08-31 evening: README Status section is current. Phases
 21/21. Checkpointing + floor mass budget landed; Hall smoke harness at
 `rail/phase2_hall_smoke.rail`.
 
-## Priority 1: explicit resistivity, done right
+## Priority 1: explicit resistivity - now REQUIRED, not optional
+
+**Late addition (v2 run, out/phase2_run_v2.log): the numerical-resistivity
+regime is METASTABLE.** Its only damping is LxF diffusion ~0.5 v dx, which
+fades as the flow converges; a re-run tracking the good run through step
+14k destabilized at t ~ 0.7 ms as vmax settled (good run stopped healthy
+at 0.92 ms by phase luck). True steady state therefore needs real
+resistivity. That makes this priority the gate for everything below.
 
 Tonight's finding (A/B-isolated, commits 8864ef3 + this one): explicit
 Spitzer eta (eta/mu0 ~ 16 m^2/s) is unstable at dr = 0.5 mm no matter how
@@ -41,9 +48,10 @@ async jobs).
 
 ## Priority 3: run hygiene
 
-- **Resume**: `mv_load_state`/`mv_save_state` exist (f32). Add a
-  run_resume flag to phase2_run.rail and chain 20k segments to a genuine
-  steady state (tonight's runs still creep +3% mass per 2k steps).
+- **Resume**: `mv_load_state`/`mv_save_state` exist (f32); the healthy
+  checkpoint is `out/phase2_ckpt.f32` (12k steps, t ~ 0.55 ms, inside the
+  stable window). Add a run_resume flag and chain segments AFTER P1 lands
+  (chaining without real eta just walks into the metastability edge).
 - **Floor budget**: printed at end of every run now. If it stays a
   significant fraction of mdot, lower rho_min_state or make the floor
   momentum-conserving.

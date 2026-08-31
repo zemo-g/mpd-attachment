@@ -61,7 +61,8 @@ main =
   let _ = print (cat ["  after ", show run_nsteps, " hall steps (t+=",
                       show_float (float_arr_get aux 1), " s): identity=",
                       show_float id1, "  vmax=", show_float vmax])
-  let ok1 = if fabs id1 < 0.05 then vmax < 400000.0 else false
+  let drift = fabs (id1 - id0)
+  let ok1 = if drift < 0.05 then vmax < 400000.0 else false
   if ok1 then
     let _ = print "HALL SMOKE PASS (bounded, identity held)"
     0
