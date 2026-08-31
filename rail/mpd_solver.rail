@@ -18,20 +18,27 @@
 --   mhd_mpd.rail pack double-counts this; deliberately not reused.)
 --   B_theta axial flux is +v_z B_theta (divergence-form advection; the
 --   stdlib core's -v_z B_theta is an in-plane-B holdover).
---   Non-ideal induction: E' = eta j + (j x B)/(n e) - grad(p_e)/(n e),
---   dB/dt += dEz/dr - dEr/dz. E_total is NOT separately heated: p absorbs
---   magnetic-energy changes (exact global conservation; local Ohmic
---   deposition approximate; Hall spuriously exchanges with p at O(its
---   transport) - acceptable while Hall runs are short, documented).
---   eta = Spitzer 5e-5/T_eV^1.5 capped to [1e-7, 2e-5] (dt stability);
+--   Non-ideal induction, resistive part: operator-split IMPLICIT
+--   diffusion (Thomas tridiagonal per z-line then per r-line, done
+--   in-place on st before the hyperbolic update). Unconditionally stable:
+--   every explicit form detonates at dr=0.5mm because the resistive layer
+--   sqrt(eta t / mu0) ~ 0.4mm is sub-cell against pinned Dirichlet faces
+--   (three A/B-isolated attempts, 2026-08-31). Prescribed faces fold into
+--   the tridiagonal (ghost = 2 face - cell absorbed into diag/rhs, so no
+--   ghost feedback loop); the axis face uses the linear-B regularization
+--   g = 2B/r (exact for B ~ r). Energy: en += (B dB + dB^2/2)/mu0 at each
+--   sweep write (telescopes to the exact magnetic-energy change, so p is
+--   untouched by field transport) plus explicit Ohmic heating dt eta j^2.
+--   Hall + grad-pe stay explicit (whistler dt) and p-absorbing, as before.
+--   eta = Spitzer 5e-5/T_eV^1.5 capped to [1e-7, 2e-5] (physical band);
 --   Hall density floor n_hall = 1e19 m^-3 (standard vacuum clamp).
 
 gamma_m1 = 0.6666666666666667
 e_charge = 1.602176634e-19
 m_ion_ar = 6.633e-26
 cfl_c = 0.30
-eta_cap = 1.0e-9
-eta_floor = 1.0e-10
+eta_cap = 2.0e-5
+eta_floor = 1.0e-7
 n_hall_floor = 1.0e19
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
@@ -330,10 +337,8 @@ mv_vmax_loop st m ji acc =
 mv_dt st m =
   let acc = float_arr_new 1 1.0
   let vmax = 1.0 * mv_vmax_loop st m 0 acc
-  let dt_cfl = cfl_c * mp_dr / vmax
-  -- resistive limit with capped eta
-  let dt_res = 0.08 * mp_dr * mp_dr / (eta_cap * inv_mu0)
-  let d1 = if dt_cfl < dt_res then dt_cfl else dt_res
+  -- no resistive limit: diffusion is implicit (unconditionally stable)
+  let d1 = cfl_c * mp_dr / vmax
   let rh = 0.0 + run_hall
   if rh > 0.5 then
     -- whistler limit at the Hall density floor and current max B scale
@@ -359,43 +364,182 @@ mv_bmax st m =
   let _ = mv_bmax_loop st m 0 acc
   float_arr_get acc 0
 
--- Energy-consistent compact resistive diffusion of B_theta:
---   dB = dt (eta/mu0) [ d2B/dz2 + d/dr((1/r) d(rB)/dr) ]   (face form)
--- paired with dE = (B dB + dB^2/2)/mu0  so p is UNTOUCHED by field
--- transport, plus explicit Ohmic heating dt eta j^2. This removes the
--- p-absorbs-ME inconsistency that drove energies negative.
-mv_d2r st j i btc =
-  if j < 2 then 0.0
+-- ── resistive diffusion: operator-split IMPLICIT (Thomas per line) ──
+--   dB/dt = d/dz(D dB/dz) + d/dr(D (1/r) d(rB)/dr),  D = eta/mu0.
+-- One backward-Euler tridiagonal solve per fluid segment of each z-line,
+-- then each r-line (Lie splitting, first order like the rest). Dirichlet
+-- faces (btp of the non-fluid neighbor; masks 3/7 carry 0 there) enter as
+-- ghost = 2*face - cell folded into the diagonal and RHS. Workspace lives
+-- in scr at scr_tri_* (four 130-slot lanes: sub, diag, super, rhs).
+
+scr_tri_a = 41341
+scr_tri_b = 41471
+scr_tri_c = 41601
+scr_tri_d = 41731
+
+-- z-line coefficients for the fluid segment (j, i0 .. i0+n-1)
+mv_zco ns scr dt j i0 n p =
+  if p >= n then 0
   else
-    let rj = mp_r_of j
-    let rp = rj + mp_dr
-    let rm = rj - mp_dr
-    let rfp = rj + 0.5 * mp_dr
-    let rfm = rj - 0.5 * mp_dr
-    let gp = (rp * mp_get st mp_f_bt (j + 1) i - rj * btc) / (mp_dr * rfp)
-    let gm = (rj * btc - rm * mp_get st mp_f_bt (j - 1) i) / (mp_dr * rfm)
-    (gp - gm) / mp_dr
+    let i = i0 + p
+    let ec = 1.0 * mv_eta ns j i
+    let em = if p == 0 then ec else
+        let e2 = 1.0 * mv_eta ns j (i - 1)
+        0.5 * (ec + e2)
+    let ep = if p == n - 1 then ec else
+        let e3 = 1.0 * mv_eta ns j (i + 1)
+        0.5 * (ec + e3)
+    let dm = em * inv_mu0
+    let dp = ep * inv_mu0
+    let lam = dt / (mp_dz * mp_dz)
+    let _ = float_arr_set scr (scr_tri_a + p) (0.0 - lam * dm)
+    let _ = float_arr_set scr (scr_tri_c + p) (0.0 - lam * dp)
+    let _ = float_arr_set scr (scr_tri_b + p) (1.0 + lam * (dm + dp))
+    let _ = float_arr_set scr (scr_tri_d + p) (mp_get ns mp_f_bt j i)
+    mv_zco ns scr dt j i0 n (p + 1)
 
-mv_diff_cell st ns dt j i =
-  let eta = 1.0 * mv_eta st j i
-  let dif = eta * inv_mu0
-  let btc = mp_get st mp_f_bt j i
-  let d2z = (mp_get st mp_f_bt j (i + 1) - 2.0 * btc + mp_get st mp_f_bt j (i - 1)) / (mp_dz * mp_dz)
-  let d2r = 1.0 * mv_d2r st j i btc
-  let db = dt * dif * (d2z + d2r)
-  let btn = mp_get ns mp_f_bt j i
-  let _ = mp_put ns mp_f_bt j i (btn + db)
-  let dme = (btn * db + 0.5 * db * db) * inv_mu0
-  let jr = mv_jr st j i
-  let jz = mv_jz st j i
-  let heat = dt * eta * (jr * jr + jz * jz)
-  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dme + heat)
+-- r-line coefficients for the fluid segment (j0 .. j0+n-1, i).
+-- A segment starting at j0 == 1 abuts the axis: the inner-face flux uses
+-- g = 2B/r (exact for B ~ r, which is the physical axis behavior), no
+-- Dirichlet fold there. rfm = 0 at j = 1 makes the generic form singular,
+-- hence the branch.
+mv_rco ns scr dt i j0 n p =
+  if p >= n then 0
+  else
+    let j = j0 + p
+    let r = mp_r_of j
+    let ec = 1.0 * mv_eta ns j i
+    let em = if p == 0 then ec else
+        let e2 = 1.0 * mv_eta ns (j - 1) i
+        0.5 * (ec + e2)
+    let ep = if p == n - 1 then ec else
+        let e3 = 1.0 * mv_eta ns (j + 1) i
+        0.5 * (ec + e3)
+    let dm = em * inv_mu0
+    let dp = ep * inv_mu0
+    let lam = dt / (mp_dr * mp_dr)
+    let rfp = r + 0.5 * mp_dr
+    let rp = r + mp_dr
+    let _ = float_arr_set scr (scr_tri_c + p) (0.0 - lam * dp * rp / rfp)
+    let ax = if p == 0 then j == 1 else false
+    let _ = if ax then
+        let _ = float_arr_set scr (scr_tri_a + p) 0.0
+        float_arr_set scr (scr_tri_b + p) (1.0 + lam * r * dp / rfp + dt * 2.0 * dm / (mp_dr * r))
+      else
+        let rfm = r - 0.5 * mp_dr
+        let rm = r - mp_dr
+        let _ = float_arr_set scr (scr_tri_a + p) (0.0 - lam * dm * rm / rfm)
+        float_arr_set scr (scr_tri_b + p) (1.0 + lam * r * (dp / rfp + dm / rfm))
+    let _ = float_arr_set scr (scr_tri_d + p) (mp_get ns mp_f_bt j i)
+    mv_rco ns scr dt i j0 n (p + 1)
 
-mv_diff_loop st ns m dt ji =
+-- Dirichlet fold-in at the segment ends (ghost = 2*face - cell)
+mv_tri_dir_l scr bf =
+  let a0 = float_arr_get scr scr_tri_a
+  let _ = float_arr_set scr scr_tri_b (float_arr_get scr scr_tri_b - a0)
+  let _ = float_arr_set scr scr_tri_d (float_arr_get scr scr_tri_d - 2.0 * a0 * bf)
+  float_arr_set scr scr_tri_a 0.0
+
+mv_tri_dir_r scr n bf =
+  let cn = float_arr_get scr (scr_tri_c + n - 1)
+  let _ = float_arr_set scr (scr_tri_b + n - 1) (float_arr_get scr (scr_tri_b + n - 1) - cn)
+  let _ = float_arr_set scr (scr_tri_d + n - 1) (float_arr_get scr (scr_tri_d + n - 1) - 2.0 * cn * bf)
+  float_arr_set scr (scr_tri_c + n - 1) 0.0
+
+mv_thomas_fwd scr n p =
+  if p >= n then 0
+  else
+    let w = float_arr_get scr (scr_tri_a + p) / float_arr_get scr (scr_tri_b + p - 1)
+    let _ = float_arr_set scr (scr_tri_b + p) (float_arr_get scr (scr_tri_b + p) - w * float_arr_get scr (scr_tri_c + p - 1))
+    let _ = float_arr_set scr (scr_tri_d + p) (float_arr_get scr (scr_tri_d + p) - w * float_arr_get scr (scr_tri_d + p - 1))
+    mv_thomas_fwd scr n (p + 1)
+
+-- write one solved value with the magnetic-energy pairing (per-sweep
+-- pairings telescope to the exact me change; p untouched by transport)
+mv_diff_write ns j i x =
+  let bold = mp_get ns mp_f_bt j i
+  let db = x - bold
+  let dme = (bold * db + 0.5 * db * db) * inv_mu0
+  let _ = mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dme)
+  mp_put ns mp_f_bt j i x
+
+mv_zback ns scr j i0 p xn =
+  if p < 0 then 0
+  else
+    let x = (float_arr_get scr (scr_tri_d + p) - float_arr_get scr (scr_tri_c + p) * xn) / float_arr_get scr (scr_tri_b + p)
+    let _ = mv_diff_write ns j (i0 + p) x
+    mv_zback ns scr j i0 (p - 1) x
+
+mv_rback ns scr i j0 p xn =
+  if p < 0 then 0
+  else
+    let x = (float_arr_get scr (scr_tri_d + p) - float_arr_get scr (scr_tri_c + p) * xn) / float_arr_get scr (scr_tri_b + p)
+    let _ = mv_diff_write ns (j0 + p) i x
+    mv_rback ns scr i j0 (p - 1) x
+
+-- last fluid index of the run starting at a known-fluid cell
+mv_zrun m j i =
+  if i >= mp_nzm2 then mp_nzm2
+  else if arr_get m (j * mp_nz + i + 1) == 0 then mv_zrun m j (i + 1)
+  else i
+
+mv_rrun m i j =
+  if j >= mp_nrm2 then mp_nrm2
+  else if arr_get m ((j + 1) * mp_nz + i) == 0 then mv_rrun m i (j + 1)
+  else j
+
+mv_zscan ns btp m scr dt j i =
+  if i > mp_nzm2 then 0
+  else if arr_get m (j * mp_nz + i) == 0 then
+    let i1 = mv_zrun m j i
+    let n = i1 - i + 1
+    let _ = mv_zco ns scr dt j i n 0
+    let _ = mv_tri_dir_l scr (float_arr_get btp (j * mp_nz + i - 1))
+    let _ = mv_tri_dir_r scr n (float_arr_get btp (j * mp_nz + i1 + 1))
+    let _ = mv_thomas_fwd scr n 1
+    let _ = mv_zback ns scr j i (n - 1) 0.0
+    mv_zscan ns btp m scr dt j (i1 + 2)
+  else mv_zscan ns btp m scr dt j (i + 1)
+
+mv_rscan ns btp m scr dt i j =
+  if j > mp_nrm2 then 0
+  else if arr_get m (j * mp_nz + i) == 0 then
+    let j1 = mv_rrun m i j
+    let n = j1 - j + 1
+    let _ = mv_rco ns scr dt i j n 0
+    let _ = if j == 1 then 0.0 else mv_tri_dir_l scr (float_arr_get btp ((j - 1) * mp_nz + i))
+    let _ = mv_tri_dir_r scr n (float_arr_get btp ((j1 + 1) * mp_nz + i))
+    let _ = mv_thomas_fwd scr n 1
+    let _ = mv_rback ns scr i j (n - 1) 0.0
+    mv_rscan ns btp m scr dt i (j1 + 2)
+  else mv_rscan ns btp m scr dt i (j + 1)
+
+mv_zsweep ns btp m scr dt j =
+  if j > mp_nrm2 then 0
+  else
+    let _ = mv_zscan ns btp m scr dt j 1
+    mv_zsweep ns btp m scr dt (j + 1)
+
+mv_rsweep ns btp m scr dt i =
+  if i > mp_nzm2 then 0
+  else
+    let _ = mv_rscan ns btp m scr dt i 1
+    mv_rsweep ns btp m scr dt (i + 1)
+
+-- explicit Ohmic heating dt eta j^2 (post-diffusion field; stencils at
+-- boundary-adjacent cells read the previous fill of the ghost cells,
+-- one operator stale, first-order like every source here)
+mv_heat_cell ns dt j i =
+  let et = 1.0 * mv_eta ns j i
+  let jr = 1.0 * mv_jr ns j i
+  let jz = 1.0 * mv_jz ns j i
+  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dt * et * (jr * jr + jz * jz))
+
+mv_heat_loop ns m dt ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_diff_cell st ns dt (ji / mp_nz) (ji % mp_nz) else 0
-    mv_diff_loop st ns m dt (ji + 1)
+    let _ = if arr_get m ji == 0 then mv_heat_cell ns dt (ji / mp_nz) (ji % mp_nz) else 0.0
+    mv_heat_loop ns m dt (ji + 1)
 
 -- vacuum guard: state density floor + velocity cap (rescale momenta).
 -- The pinch evacuates the near-cathode region; without this the Alfven
@@ -434,17 +578,22 @@ mv_floor_loop ns m facc ji =
 mv_save_state path st = float_arr_to_f32_file path st mp_state
 mv_load_state path st = float_arr_from_f32_file path st mp_state
 
--- ── one full step: ghosts -> LxF -> geometry -> non-ideal induction ──
+-- ── one full step ──
+-- Order (Lie splitting): implicit resistive sweeps + Ohmic heat in-place
+-- on st, then ghosts, then hyperbolic st -> ns (+ explicit Hall), floor.
 -- ns and scratch are caller-owned and reused (no per-step allocation; the
 -- caller double-buffers st <-> ns). fb: 20-float flux scratch. scr: one
--- 3*mp_nrnz array carved by offset (er 0, ez +13780, parr +27560).
+-- 41861-float array carved by offset (er 0, ez +13780, parr +27560,
+-- fmass 41340, tridiagonal lanes 41341..41860).
 mv_step st ns btp m fb scr dt =
+  let _ = mv_zsweep st btp m scr dt 1
+  let _ = mv_rsweep st btp m scr dt 1
+  let _ = mv_heat_loop st m dt 0
   let _ = mv_apply_ghosts st btp m
   let cr = dt / (2.0 * mp_dr)
   let cz = dt / (2.0 * mp_dz)
   let _ = mv_lxf_loop st ns m cr cz fb 0
   let _ = mv_geom_loop st ns m dt 0
-  let _ = mv_diff_loop st ns m dt 0
   let rh = 0.0 + run_hall
   let _ = if rh > 0.5 then
       let _ = mv_parr_loop st scr 0

@@ -13,6 +13,9 @@ import "rail/pbt.rail"
 import "rail/semi_lib.rail"
 import "rail/mhd_pbt.rail"
 import "rail/stress_diag.rail"
+import "rail/mpd_solver.rail"
+
+run_hall = 0.0
 
 near v target tol = fabs (v - target) < tol
 
@@ -134,12 +137,98 @@ main =
   let tipv = 1.0 * float_arr_get btp (19 * mp_nz + 80)
   let f21 = check "tip prescription sane (compiler-bug guard)"
               (near tipv 0.0328 0.001) f20
-  if f21 == 0 then
-    let _ = print "SELFTEST PASS (21 checks)"
+  -- implicit-diffusion guards: the Thomas solve must preserve the exact
+  -- steady profiles of each 1D operator (any eta field for c/r since its
+  -- flux g = (1/r) d(rB)/dr is identically zero; uniform eta for the
+  -- others -- mv_init gives uniform p and rho, so the line fills rebuild
+  -- en to keep p = amb_p exactly)
+  let jt2 = 0.0 + 8000.0
+  let stx = mv_init jt2
+  let scr2 = float_arr_new 41861 0.0
+  let dtbig = 1.0
+  -- (22) r-solve, coax vacuum field c/r on j = 20..128 at i = 40
+  let _ = st_line_rinv stx 40 20
+  let _ = mv_rco stx scr2 dtbig 40 20 109 0
+  let _ = mv_tri_dir_l scr2 (0.001 / pbt_r_c)
+  let _ = mv_tri_dir_r scr2 109 (0.001 / pbt_r_ch)
+  let _ = mv_thomas_fwd scr2 109 1
+  let _ = mv_rback stx scr2 40 20 108 0.0
+  -- c/r has curvature, and the ghost fold is linear extrapolation, so
+  -- preservation here is boundary-order (O(dr^2/r^2) at the cathode
+  -- face), not exact -- the tolerance reflects that
+  let b70 = mp_get stx mp_f_bt 70 40
+  let r70 = mp_r_of 70
+  let f22 = check "implicit r-solve holds c/r to boundary order"
+              (fabs (b70 * r70 / 0.001 - 1.0) < 0.005) f21
+  -- (23) z-solve, linear profile on i = 1..104 at j = 60
+  let _ = st_line_zlin stx 60 1
+  let _ = mv_zco stx scr2 dtbig 60 1 104 0
+  let _ = mv_tri_dir_l scr2 0.001
+  let _ = mv_tri_dir_r scr2 104 0.0023
+  let _ = mv_thomas_fwd scr2 104 1
+  let _ = mv_zback stx scr2 60 1 103 0.0
+  let b52 = mp_get stx mp_f_bt 60 52
+  let z52 = mp_z_of 52
+  let f23 = check "implicit z-solve preserves linear profile"
+              (fabs (b52 / (0.001 + 0.01 * z52) - 1.0) < 0.000000001) f22
+  -- (24) axis regularization, B = alpha r on j = 1..128 at i = 100
+  let _ = st_line_alr stx 100 1
+  let _ = mv_rco stx scr2 dtbig 100 1 128 0
+  let _ = mv_tri_dir_r scr2 128 (0.01 * pbt_r_ch)
+  let _ = mv_thomas_fwd scr2 128 1
+  let _ = mv_rback stx scr2 100 1 127 0.0
+  let b64 = mp_get stx mp_f_bt 64 100
+  let r64 = mp_r_of 64
+  let f24 = check "implicit axis solve preserves B ~ r"
+              (fabs (b64 / (0.01 * r64) - 1.0) < 0.000000001) f23
+  -- (25) B = alpha r again but through BOTH Dirichlet folds (j = 20..128
+  -- at i = 40; linear extrapolation is exact on a linear profile, so this
+  -- one IS exact): locks the fold-in coefficients
+  let _ = st_line_alr stx 40 1
+  let _ = mv_rco stx scr2 dtbig 40 20 109 0
+  let _ = mv_tri_dir_l scr2 (0.01 * pbt_r_c)
+  let _ = mv_tri_dir_r scr2 109 (0.01 * pbt_r_ch)
+  let _ = mv_thomas_fwd scr2 109 1
+  let _ = mv_rback stx scr2 40 20 108 0.0
+  let b90 = mp_get stx mp_f_bt 90 40
+  let r90 = mp_r_of 90
+  let f25 = check "implicit r-solve exact on B ~ r through both folds"
+              (fabs (b90 / (0.01 * r90) - 1.0) < 0.000000001) f24
+  if f25 == 0 then
+    let _ = print "SELFTEST PASS (25 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f21, " of 21)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f25, " of 25)"])
     1
+
+-- line fills for the implicit-diffusion guards: set bt and rebuild en so
+-- p stays exactly amb_p (mv_init leaves momenta zero and p uniform)
+st_line_rinv stx i j =
+  if j > mp_nrm2 then 0
+  else
+    let r = mp_r_of j
+    let b = 0.001 / r
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (amb_p / gamma_m1 + 0.5 * b * b * inv_mu0)
+    st_line_rinv stx i (j + 1)
+
+st_line_zlin stx j i =
+  if i > mp_nzm2 then 0
+  else
+    let z = mp_z_of i
+    let b = 0.001 + 0.01 * z
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (amb_p / gamma_m1 + 0.5 * b * b * inv_mu0)
+    st_line_zlin stx j (i + 1)
+
+st_line_alr stx i j =
+  if j > mp_nrm2 then 0
+  else
+    let r = mp_r_of j
+    let b = 0.01 * r
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (amb_p / gamma_m1 + 0.5 * b * b * inv_mu0)
+    st_line_alr stx i (j + 1)
 
 -- analytic smooth field / decaying coax fills (phase2_identity mirrors)
 st_fill_an bt jtot i =
