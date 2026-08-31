@@ -30,8 +30,8 @@ gamma_m1 = 0.6666666666666667
 e_charge = 1.602176634e-19
 m_ion_ar = 6.633e-26
 cfl_c = 0.30
-eta_cap = 2.0e-5
-eta_floor = 1.0e-7
+eta_cap = 1.0e-9
+eta_floor = 1.0e-10
 n_hall_floor = 1.0e19
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)

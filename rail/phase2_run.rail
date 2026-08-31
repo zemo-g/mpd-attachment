@@ -208,5 +208,27 @@ main =
   let arows2 = reverse (att_aif stf mp_j_fluid0 [])
   let _ = write_file "out/phase2_attach.csv"
             (cat ["surface,coord,j_A_m2\n", join "\n" arows1, "\n", join "\n" arows2, "\n"])
-  let _ = print "  wrote out/phase2_bp_profile.csv, out/phase2_attach.csv"
+  -- full-state dump for rendering (tier-1 field images)
+  let srows = reverse (state_rows stf m 0 [])
+  let _ = write_file "out/phase2_state.csv"
+            (cat ["j,i,r_m,z_m,mask,rho,vr,vz,p_Pa,bt_T\n", join "\n" srows, "\n"])
+  let _ = print "  wrote out/phase2_bp_profile.csv, out/phase2_attach.csv, out/phase2_state.csv"
   0
+
+state_rows st m ji acc =
+  if ji >= mp_nrnz then acc
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let mk = arr_get m ji
+    let rho = mp_get st mp_f_rho j i
+    let rho_safe = if rho < rho_floor then rho_floor else rho
+    let vr = mp_get st mp_f_mr j i / rho_safe
+    let vz = mp_get st mp_f_mz j i / rho_safe
+    let p = mv_pressure st j i
+    let bt = mp_get st mp_f_bt j i
+    let row = cat [show j, ",", show i, ",", show_float (mp_r_of j), ",",
+                   show_float (mp_z_of i), ",", show mk, ",",
+                   show_float rho, ",", show_float vr, ",", show_float vz, ",",
+                   show_float p, ",", show_float bt]
+    state_rows st m (ji + 1) (cons row acc)
