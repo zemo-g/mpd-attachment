@@ -80,10 +80,13 @@ run_loop st ns aux btp m fb scr n =
         -- observables in the print so plateau vs drift is visible mid-run
         let ptip = 1.0 * mv_pressure ns 10 mp_i_tip1
         let pw = 1.0 * mv_pressure ns mp_nrm2 1
+        let am = float_arr_new 1 0.0
+        let at = float_arr_new 1 0.0
+        let _ = outflow_sums ns 1 am at
         print (cat ["  step ", show (run_nsteps - n), "  t=", show_float (float_arr_get aux 1),
                     "  dt=", show_float dt, "  mass=", show_float mtot,
                     "  vmax=", show_float vmax, "  ptip=", show_float ptip,
-                    "  pwall=", show_float pw])
+                    "  pwall=", show_float pw, "  mdot_out=", show_float (float_arr_get am 0)])
       else 0
     run_loop ns st aux btp m fb scr (n - 1)
 
