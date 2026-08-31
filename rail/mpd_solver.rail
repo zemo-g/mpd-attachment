@@ -43,6 +43,7 @@ n_hall_floor = 1.0e19
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
+in_vg_cap = 600.0
 in_rho_ann = 0.014707
 in_rho_ring = 0.0064220
 kT_m = 62444.0
@@ -149,11 +150,21 @@ mv_ghost_cell st btp m j i =
     -- cell (kills the diffusive term); ghost mz reflects around the
     -- nominal so the face average is EXACTLY rho_in v_in; en carries a
     -- 300 K reservoir at the copied density.
+    -- The reflected momentum is CAPPED at |vz_ghost| <= in_vg_cap: with
+    -- near-vacuum fluid the uncapped ghost hits ~3e5 m/s (mz nominal
+    -- over a tiny copied rho) and detonates the row on cold start - and
+    -- mv_dt never sees ghost speeds. Physically a mass-flow controller
+    -- cannot force 6 g/s into vacuum; the cap is the choked
+    -- valve-opening transient, and it disengages in the operating
+    -- regime (vz_ghost ~ in_v there), where metering is exact.
     let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
     let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
     let rho_c = mp_get st mp_f_rho j 1
     let rho = if rho_c < rho_floor then rho_floor else rho_c
-    let mzg = 2.0 * rho_in * in_v - mp_get st mp_f_mz j 1
+    let mzc = mp_get st mp_f_mz j 1
+    let mzn = 2.0 * rho_in * in_v - mzc
+    let cap = 1.0 * rho * in_vg_cap
+    let mzg = if mzn > cap then cap else if mzn < 0.0 - cap then 0.0 - cap else mzn
     let ke = 0.5 * mzg * mzg / rho
     let me = 0.5 * btg * btg * inv_mu0
     let _ = mp_put st mp_f_rho j i rho
@@ -201,12 +212,49 @@ mv_ghost_loop st btp m i =
 
 mv_apply_ghosts st btp m = mv_ghost_loop st btp m 0
 
--- ── LxF interior + geometric sources ──
+-- ── interior update: conservative in r (2026-08-31 night rewrite) ──
+-- The old unweighted quarter-average + geometric sources CREATED mass at
+-- O(dr/r) per cell (~7e-3 kg/s on seg 4 - more than the inlet flow;
+-- caught by phase2_massaudit's flux-vs-inventory comparison).
+-- Fields 0..3 now update in face-flux form on the conserved r U:
+--     Phi_rface = r_f [ 0.5 (F_c + F_nb) - (dr/4dt) (U_nb - U_c) ]
+--     dU = -(dt / (r_j dr)) (Phi_r+ - Phi_r-) - (dt/dz)(Phihat_z+ - Phihat_z-)
+-- so sum(r_j U_j) telescopes to the boundary EXACTLY. Properties:
+--   r_f- = 0 at j = 1 kills the axis face automatically (zero area);
+--   r_f+ + r_f- = 2 r_j keeps the self-weight identical to the flat
+--   quarter-average at every j (no stability change);
+--   diffusion acts on U scaled by area, so uniform states are preserved
+--   and every mirror-ghost cancellation (walls, electrodes, metered
+--   inlet) carries over unchanged.
+-- Geometric sources REDUCE to the exact conservative-form residue:
+--   mass, m_z, E: none;  m_r: + (p - B^2/2mu0) / r  (theta-theta stress).
+-- bt stays on the flat form: azimuthal induction is a flat 2D
+-- conservation law (dB/dt + d_r(vr B) + d_z(vz B) = 0) - do NOT weight.
 mv_lxf_field st ns cr cz fb j i f =
-  let fa = (mp_get st f (j + 1) i + mp_get st f (j - 1) i + mp_get st f j (i + 1) + mp_get st f j (i - 1)) / 4.0
-  let dfr = float_arr_get fb f - float_arr_get fb (5 + f)
-  let dfz = float_arr_get fb (10 + f) - float_arr_get fb (15 + f)
-  float_arr_set ns (mp_idx f j i) (fa - cr * dfr - cz * dfz)
+  if f == 4 then
+    let fa = (mp_get st f (j + 1) i + mp_get st f (j - 1) i + mp_get st f j (i + 1) + mp_get st f j (i - 1)) / 4.0
+    let dfr = float_arr_get fb f - float_arr_get fb (5 + f)
+    let dfz = float_arr_get fb (10 + f) - float_arr_get fb (15 + f)
+    float_arr_set ns (mp_idx f j i) (fa - cr * dfr - cz * dfz)
+  else
+    let r = mp_r_of j
+    let rfp = r + 0.5 * mp_dr
+    let rfm = r - 0.5 * mp_dr
+    let uc = mp_get st f j i
+    let un = mp_get st f (j + 1) i
+    let us = mp_get st f (j - 1) i
+    let ue = mp_get st f j (i + 1)
+    let uw = mp_get st f j (i - 1)
+    let fcr = float_arr_get fb (20 + f)
+    let fn = float_arr_get fb f
+    let fs = float_arr_get fb (5 + f)
+    let fe = float_arr_get fb (10 + f)
+    let fw = float_arr_get fb (15 + f)
+    let rdif = (rfp * (un - uc) + rfm * (us - uc)) / (4.0 * r)
+    let radv = cr * (rfp * (fcr + fn) - rfm * (fs + fcr)) / r
+    let zdif = (ue + uw - 2.0 * uc) / 4.0
+    let zadv = cz * (fe - fw)
+    float_arr_set ns (mp_idx f j i) (uc + rdif - radv + zdif - zadv)
 
 mv_lxf_apply st ns cr cz fb ji =
   let j = ji / mp_nz
@@ -217,22 +265,13 @@ mv_lxf_apply st ns cr cz fb ji =
   let _ = mv_lxf_field st ns cr cz fb j i 3
   mv_lxf_field st ns cr cz fb j i 4
 
+-- theta-theta stress residue of the conservative r-form: m_r only
 mv_geom_src st ns dt j i =
   let r = mp_r_of j
-  let inv_r = 1.0 / r
-  let rho = mp_get st mp_f_rho j i
-  let rho_safe = if rho < rho_floor then rho_floor else rho
-  let mr = mp_get st mp_f_mr j i
-  let mz = mp_get st mp_f_mz j i
   let bt = mp_get st mp_f_bt j i
-  let e = mp_get st mp_f_en j i
-  let vr = mr / rho_safe
   let p = mv_pressure st j i
-  let pt = p + 0.5 * bt * bt * inv_mu0
-  let _ = mp_put ns mp_f_rho j i (mp_get ns mp_f_rho j i - dt * rho * vr * inv_r)
-  let _ = mp_put ns mp_f_mr j i (mp_get ns mp_f_mr j i - dt * (mr * vr + bt * bt * inv_mu0) * inv_r)
-  let _ = mp_put ns mp_f_mz j i (mp_get ns mp_f_mz j i - dt * mz * vr * inv_r)
-  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i - dt * (e + pt) * vr * inv_r)
+  let src = (p - 0.5 * bt * bt * inv_mu0) / r
+  mp_put ns mp_f_mr j i (mp_get ns mp_f_mr j i + dt * src)
 
 mv_cell st ns cr cz fb ji =
   let j = ji / mp_nz
@@ -241,6 +280,7 @@ mv_cell st ns cr cz fb ji =
   let _ = mv_flux_r st (j - 1) i fb 5
   let _ = mv_flux_z st j (i + 1) fb 10
   let _ = mv_flux_z st j (i - 1) fb 15
+  let _ = mv_flux_r st j i fb 20
   mv_lxf_apply st ns cr cz fb ji
 
 mv_lxf_loop st ns m cr cz fb ji =
@@ -586,6 +626,66 @@ mv_floor_loop ns m facc ji =
 -- fine for resume; NOT for attestation)
 mv_save_state path st = float_arr_to_f32_file path st mp_state
 mv_load_state path st = float_arr_from_f32_file path st mp_state
+
+-- ── mass bookkeeping (the conservation gate's currency) ──
+mv_tau = 6.283185307179586
+
+mv_mass_loop st m ji acc =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let rho = float_arr_get st ji
+        float_arr_set acc 0 (float_arr_get acc 0 + rho * mv_tau * mp_r_of (ji / mp_nz) * mp_dr * mp_dz)
+      else 0
+    mv_mass_loop st m (ji + 1) acc
+
+mv_total_mass st m =
+  let acc = float_arr_new 1 0.0
+  let _ = mv_mass_loop st m 0 acc
+  float_arr_get acc 0
+
+-- Boundary mass rate (kg/s INTO the domain), using the scheme's exact
+-- face fluxes: r-faces carry area 2 pi r_f dz (r_f = 0 kills the axis
+-- face), z-faces 2 pi r_j dr. Ghosts must be applied first. With the
+-- conservative interior, d(total mass)/dt == this + floor additions,
+-- to rounding - selftest check 26 holds that equality per step.
+mv_bmass_face st m acc dt j i dj di =
+  let mk = arr_get m ((j + dj) * mp_nz + i + di)
+  if mk == 0 then 0.0
+  else
+    let r = mp_r_of j
+    let rc = mp_get st mp_f_rho j i
+    let rg = mp_get st mp_f_rho (j + dj) (i + di)
+    let rate = if dj == 0 then
+        let fc = mp_get st mp_f_mz j i
+        let fg = mp_get st mp_f_mz (j + dj) (i + di)
+        let fh = 0.5 * (fc + fg) - (mp_dz / (4.0 * dt)) * to_float di * (rg - rc)
+        (0.0 - to_float di) * fh * mv_tau * r * mp_dr
+      else
+        let rf = r + to_float dj * 0.5 * mp_dr
+        let fc = mp_get st mp_f_mr j i
+        let fg = mp_get st mp_f_mr (j + dj) (i + di)
+        let fh = 0.5 * (fc + fg) - (mp_dr / (4.0 * dt)) * to_float dj * (rg - rc)
+        (0.0 - to_float dj) * fh * mv_tau * rf * mp_dz
+    float_arr_set acc 0 (float_arr_get acc 0 + rate)
+
+mv_bmass_loop st m acc dt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let j = ji / mp_nz
+        let i = ji % mp_nz
+        let _ = mv_bmass_face st m acc dt j i 1 0
+        let _ = mv_bmass_face st m acc dt j i (0 - 1) 0
+        let _ = mv_bmass_face st m acc dt j i 0 1
+        mv_bmass_face st m acc dt j i 0 (0 - 1)
+      else 0.0
+    mv_bmass_loop st m acc dt (ji + 1)
+
+mv_bmass_rate st m dt =
+  let acc = float_arr_new 1 0.0
+  let _ = mv_bmass_loop st m acc dt 0
+  float_arr_get acc 0
 
 -- ── one full step ──
 -- Order (Lie splitting): implicit resistive sweeps + Ohmic heat in-place

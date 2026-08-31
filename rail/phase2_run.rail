@@ -28,20 +28,7 @@ run_resume = 0.0
 
 two_pi = 6.283185307179586
 
-mass_loop st m ji acc =
-  if ji >= mp_nrnz then float_arr_get acc 0
-  else
-    let _ = if arr_get m ji == 0 then
-        let j = ji / mp_nz
-        let rho = float_arr_get st ji
-        float_arr_set acc 0 (float_arr_get acc 0 + rho * two_pi * mp_r_of j * mp_dr * mp_dz)
-      else 0
-    mass_loop st m (ji + 1) acc
-
-total_mass st m =
-  let acc = float_arr_new 1 0.0
-  let _ = mass_loop st m 0 acc
-  float_arr_get acc 0
+total_mass st m = 1.0 * mv_total_mass st m
 
 -- outflow mass rate and exhaust thrust at fluid row i = mp_nzm2
 outflow_sums st j accm acct =
@@ -167,7 +154,7 @@ main =
       let _ = mv_load_state "out/phase2_ckpt.f32" st0
       print "  resumed from out/phase2_ckpt.f32"
     else 0
-  let fb = float_arr_new 20 0.0
+  let fb = float_arr_new 25 0.0
   let scr = float_arr_new 41861 0.0
   let aux = float_arr_new 3 0.0
   let dt0 = mv_dt st0 m

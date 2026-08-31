@@ -194,12 +194,40 @@ main =
   let r90 = mp_r_of 90
   let f25 = check "implicit r-solve exact on B ~ r through both folds"
               (fabs (b90 / (0.01 * r90) - 1.0) < 0.000000001) f24
-  if f25 == 0 then
-    let _ = print "SELFTEST PASS (25 checks)"
+  -- (26) mass-conservation gate: the interior creates NOTHING. After 50
+  -- real solver steps from cold init, one more step's change in total
+  -- mass must equal dt * (boundary flux rate) - the defect this guards
+  -- against manufactured ~7e-3 kg/s on the pre-conservative scheme
+  -- (2026-08-31). The floor accumulator must also stay 0.
+  let stq = mv_init jt2
+  let nsq0 = mv_init jt2
+  let fbq = float_arr_new 25 0.0
+  let scrq = float_arr_new 41861 0.0
+  let dtq = 1.0 * mv_dt stq m
+  let stw = mc_run stq nsq0 btp m fbq scrq dtq 50
+  let _ = mv_apply_ghosts stw btp m
+  let m0 = 1.0 * mv_total_mass stw m
+  let br = 1.0 * mv_bmass_rate stw m dtq
+  let nsw = float_arr_new mp_state 0.0
+  let _ = mv_step stw nsw btp m fbq scrq dtq
+  let m1 = 1.0 * mv_total_mass nsw m
+  let dm = m1 - m0
+  let pred = dtq * br
+  let okm = fabs (dm - pred) < fabs pred * 0.000001 + 1.0e-18
+  let ok26 = if okm then float_arr_get scrq scr_fmass == 0.0 else false
+  let f26 = check "one-step mass conservation (interior creates nothing)" ok26 f25
+  if f26 == 0 then
+    let _ = print "SELFTEST PASS (26 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f25, " of 25)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f26, " of 26)"])
     1
+
+mc_run st ns btp m fb scr dt n =
+  if n <= 0 then st
+  else
+    let _ = mv_step st ns btp m fb scr dt
+    mc_run ns st btp m fb scr dt (n - 1)
 
 -- line fills for the implicit-diffusion guards: set bt and rebuild en so
 -- p stays exactly amb_p (mv_init leaves momenta zero and p uniform)

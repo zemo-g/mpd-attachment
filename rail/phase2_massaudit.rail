@@ -21,25 +21,27 @@ run_hall = 0.0
 two_pi = 6.283185307179586
 
 -- accumulate the mass rate INTO the domain through the (dj,di) face of
--- fluid cell (j,i), binned by neighbor mask; no-op for fluid neighbors
+-- fluid cell (j,i), binned by neighbor mask; no-op for fluid neighbors.
+-- r-faces carry FACE area 2 pi r_f dz (matches the conservative scheme
+-- exactly; r_f = 0 kills the axis face), z-faces 2 pi r_j dr.
 ma_face st m acc dt j i dj di =
   let mk = arr_get m ((j + dj) * mp_nz + i + di)
   if mk == 0 then 0.0
   else
     let r = mp_r_of j
-    let vol = two_pi * r * mp_dr * mp_dz
     let rc = mp_get st mp_f_rho j i
     let rg = mp_get st mp_f_rho (j + dj) (i + di)
     let rate = if dj == 0 then
         let fc = mp_get st mp_f_mz j i
         let fg = mp_get st mp_f_mz (j + dj) (i + di)
         let fh = 0.5 * (fc + fg) - (mp_dz / (4.0 * dt)) * to_float di * (rg - rc)
-        (0.0 - to_float di) * fh * vol / mp_dz
+        (0.0 - to_float di) * fh * two_pi * r * mp_dr
       else
+        let rf = r + to_float dj * 0.5 * mp_dr
         let fc = mp_get st mp_f_mr j i
         let fg = mp_get st mp_f_mr (j + dj) (i + di)
         let fh = 0.5 * (fc + fg) - (mp_dr / (4.0 * dt)) * to_float dj * (rg - rc)
-        (0.0 - to_float dj) * fh * vol / mp_dr
+        (0.0 - to_float dj) * fh * two_pi * rf * mp_dz
     float_arr_set acc mk (float_arr_get acc mk + rate)
 
 ma_loop st m acc dt ji =
