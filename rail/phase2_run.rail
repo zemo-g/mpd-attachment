@@ -1,0 +1,212 @@
+-- rail/phase2_run.rail -- Phase 2 run harness.
+-- Argon 6 g/s, attachment prescribed (Rudolph). Runs the solver to (near)
+-- steady state, then applies the three Phase 2 checks:
+--   1. stress identity: int_V j_r B dV vs grouped surface sum
+--   2. Cory backplate pressure profile (out/phase2_bp_profile.csv)
+--   3. per-surface blowing/pinching split vs the semi-empirical values
+-- and stores the attachment field (out/phase2_attach.csv, standing
+-- convention: every run stores attachment, not just thrust).
+--
+-- run_hall gates BOTH the Hall and grad-pe terms (0.0 = resistive
+-- baseline; 1.0 adds whistler dt limit -- expect ~100x more steps).
+--
+-- Run: rail_native run rail/phase2_run.rail
+
+import "rail/pbt.rail"
+import "rail/semi_lib.rail"
+import "rail/mhd_pbt.rail"
+import "rail/stress_diag.rail"
+import "rail/mpd_solver.rail"
+
+run_hall = 0.0
+run_jtot = 8000.0
+run_nsteps = 20000
+print_every = 2000
+
+two_pi = 6.283185307179586
+
+mass_loop st m ji acc =
+  if ji >= mp_nrnz then float_arr_get acc 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let j = ji / mp_nz
+        let rho = float_arr_get st ji
+        float_arr_set acc 0 (float_arr_get acc 0 + rho * two_pi * mp_r_of j * mp_dr * mp_dz)
+      else 0
+    mass_loop st m (ji + 1) acc
+
+total_mass st m =
+  let acc = float_arr_new 1 0.0
+  let _ = mass_loop st m 0 acc
+  float_arr_get acc 0
+
+-- outflow mass rate and exhaust thrust at fluid row i = mp_nzm2
+outflow_sums st j accm acct =
+  if j > mp_nrm2 then 0
+  else
+    let rho = mp_get st mp_f_rho j mp_nzm2
+    let rho_safe = if rho < rho_floor then rho_floor else rho
+    let mz = mp_get st mp_f_mz j mp_nzm2
+    let p = mv_pressure st j mp_nzm2
+    let da = two_pi * mp_r_of j * mp_dr
+    let _ = float_arr_set accm 0 (float_arr_get accm 0 + mz * da)
+    let _ = float_arr_set acct 0 (float_arr_get acct 0 + (mz * mz / rho_safe + p) * da)
+    outflow_sums st (j + 1) accm acct
+
+-- main integration loop; aux: [0]=dt, [1]=t, [2]=steps-since-dt-recompute
+run_loop st ns aux btp m fb scr n =
+  if n <= 0 then st
+  else if float_arr_get aux 0 < 1.0e-14 then
+    let _ = print "  ABORT: dt collapsed (state blew up)"
+    st
+  else
+    let k = float_arr_get aux 2
+    let _ = if k > 3.0 then
+        let dtn = 1.0 * mv_dt st m
+        let _ = float_arr_set aux 0 dtn
+        float_arr_set aux 2 0.0
+      else float_arr_set aux 2 (k + 1.0)
+    let dt = float_arr_get aux 0
+    let _ = mv_step st ns btp m fb scr dt
+    let _ = float_arr_set aux 1 (float_arr_get aux 1 + dt)
+    let _ = if n % print_every == 0 then
+        let mtot = total_mass ns m
+        let vmax = mv_vmax_probe ns m
+        print (cat ["  step ", show (run_nsteps - n), "  t=", show_float (float_arr_get aux 1),
+                    "  dt=", show_float dt, "  mass=", show_float mtot,
+                    "  vmax=", show_float vmax])
+      else 0
+    run_loop ns st aux btp m fb scr (n - 1)
+
+mv_vmax_probe st m =
+  let acc = float_arr_new 1 1.0
+  mv_vmax_loop st m 0 acc
+
+-- backplate profile CSV
+bp_rows st j acc =
+  if j > mp_nrm2 then acc
+  else
+    let r = mp_r_of j
+    let p = mv_pressure st j 1
+    bp_rows st (j + 1) (cons (cat [show_float r, ",", show_float p]) acc)
+
+-- attachment CSV: cathode side (solver j_r at j=20) + AIF (solver j_z at i=82)
+att_cath st i acc =
+  if i > mp_i_tip then acc
+  else
+    let z = mp_z_of i
+    let jrv = mv_jr st mp_j_fluid0 i
+    att_cath st (i + 1) (cons (cat ["cath_side,", show_float z, ",", show_float jrv]) acc)
+
+att_aif st j acc =
+  if j > mp_nrm2 then acc
+  else
+    let r = mp_r_of j
+    let jzv = mv_jz st j mp_i_aif
+    att_aif st (j + 1) (cons (cat ["aif,", show_float r, ",", show_float jzv]) acc)
+
+dump_cell st btp j i tag =
+  print (cat ["  [", tag, "] rho=", show_float (mp_get st mp_f_rho j i),
+              " mr=", show_float (mp_get st mp_f_mr j i),
+              " mz=", show_float (mp_get st mp_f_mz j i),
+              " en=", show_float (mp_get st mp_f_en j i),
+              " bt=", show_float (mp_get st mp_f_bt j i),
+              " btp=", show_float (float_arr_get btp (j * mp_nz + i))])
+
+-- debug: locate the fastest cell and dump its fields
+probe st m tag =
+  let best = arr_new 2 0
+  let bestf = float_arr_new 2 0.0
+  let _ = probe_f st m 0 best bestf
+  let ji = arr_get best 0
+  let j = ji / mp_nz
+  let i = ji % mp_nz
+  print (cat ["  [", tag, "] worst cell j=", show j, " i=", show i,
+              " v=", show_float (float_arr_get bestf 0),
+              " rho=", show_float (mp_get st mp_f_rho j i),
+              " mr=", show_float (mp_get st mp_f_mr j i),
+              " mz=", show_float (mp_get st mp_f_mz j i),
+              " bt=", show_float (mp_get st mp_f_bt j i),
+              " en=", show_float (mp_get st mp_f_en j i)])
+
+probe_f st m ji best bestf =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let v = 1.0 * mv_speed st (ji / mp_nz) (ji % mp_nz)
+        let cur = float_arr_get bestf 0
+        if v > cur then
+          let _ = float_arr_set bestf 0 v
+          arr_set best 0 ji
+        else 0
+      else 0
+    probe_f st m (ji + 1) best bestf
+
+main =
+  -- 0.0 + forces promotion: passing a top-level float constant straight
+  -- into a user fn garbles one callee branch (compiler bug, see README)
+  let jt = 0.0 + run_jtot
+  let m = mp_build_mask
+  let btp = mp_build_btp jt
+  let st0 = mv_init jt
+  let ns0 = mv_init jt
+  let fb = float_arr_new 20 0.0
+  let scr = float_arr_new 41340 0.0
+  let aux = float_arr_new 3 0.0
+  let dt0 = mv_dt st0 m
+  let _ = float_arr_set aux 0 dt0
+  let _ = float_arr_set aux 2 0.0
+  let _ = print (cat ["phase2 run: J=", show (to_int jt), " A, hall=", show_float run_hall,
+                      ", steps=", show run_nsteps, ", dt0=", show_float dt0])
+  let stf = run_loop st0 ns0 aux btp m fb scr run_nsteps
+  let _ = mv_apply_ghosts stf btp m
+
+  -- check 1: stress identity
+  let bt = mv_extract_bt stf
+  let tv = sd_volume_integral bt m
+  let sg = sd_surface_integral bt m
+  let ts = float_arr_get sg 0 + float_arr_get sg 1 + float_arr_get sg 2 + float_arr_get sg 3 + float_arr_get sg 4
+  let _ = print (cat ["  identity: T_vol=", show_float tv, "  T_surf=", show_float ts,
+                      "  rel=", show_float (tv / ts - 1.0)])
+  let _ = print (cat ["    blowing: BP=", show_float (float_arr_get sg 0),
+                      " CT=", show_float (float_arr_get sg 1),
+                      " AIF=", show_float (float_arr_get sg 2),
+                      " AOF=", show_float (float_arr_get sg 3),
+                      " OUT=", show_float (float_arr_get sg 4)])
+  let bp_ref = mu0_4pi * log (pbt_r_ch / pbt_r_c) * jt * jt
+  let aif_ref = tb_aif jt
+  let _ = print (cat ["    refs:    BP=", show_float bp_ref, " AIF=", show_float aif_ref])
+
+  -- check 3 (pinching split) + thrust bookkeeping
+  let pg = sd_pressure_surfaces stf m
+  let _ = print (cat ["    pinching: BP=", show_float (float_arr_get pg 0),
+                      " CT=", show_float (float_arr_get pg 1),
+                      " AIF=", show_float (float_arr_get pg 2),
+                      " AOF=", show_float (float_arr_get pg 3),
+                      " OUT=", show_float (float_arr_get pg 4)])
+  let accm = float_arr_new 1 0.0
+  let acct = float_arr_new 1 0.0
+  let _ = outflow_sums stf 1 accm acct
+  let mdot_out = float_arr_get accm 0
+  let t_ex = float_arr_get acct 0
+  let _ = print (cat ["  mdot_out=", show_float mdot_out, " kg/s (in 0.006)   T_exhaust=",
+                      show_float t_ex, " N"])
+
+  -- check 2: backplate profile + tip pressure
+  let rows = reverse (bp_rows stf mp_j_fluid0 [])
+  let _ = write_file "out/phase2_bp_profile.csv" (cat ["r_m,p_Pa\n", join "\n" rows, "\n"])
+  let p_wall = mv_pressure stf mp_nrm2 1
+  let p_cath = mv_pressure stf mp_j_fluid0 1
+  let ptip = mv_pressure stf 10 mp_i_tip1
+  let _ = print (cat ["  backplate p: at wall=", show_float p_wall,
+                      " (Cory ", show_float (cory_p_rch jt), ")  at cathode=",
+                      show_float p_cath])
+  let _ = print (cat ["  tip p=", show_float ptip, " (Cory ", show_float (cory_p_tip jt), ")"])
+
+  -- attachment field dump
+  let arows1 = reverse (att_cath stf 1 [])
+  let arows2 = reverse (att_aif stf mp_j_fluid0 [])
+  let _ = write_file "out/phase2_attach.csv"
+            (cat ["surface,coord,j_A_m2\n", join "\n" arows1, "\n", join "\n" arows2, "\n"])
+  let _ = print "  wrote out/phase2_bp_profile.csv, out/phase2_attach.csv"
+  0

@@ -11,6 +11,8 @@
 
 import "rail/pbt.rail"
 import "rail/semi_lib.rail"
+import "rail/mhd_pbt.rail"
+import "rail/stress_diag.rail"
 
 near v target tol = fabs (v - target) < tol
 
@@ -108,9 +110,55 @@ main =
   let flat7 = tp_bp (cory_p_rch 7195.0) (cory_p_rch 7195.0)
   let ctf7 = (rest7 + flat7) / (mu0_4pi * 7195.0 * 7195.0)
   let f17 = check "flat profile misses low-current rise" (ctf7 < 3.0) f16
-  if f17 == 0 then
-    let _ = print "SELFTEST PASS (17 checks)"
+  -- phase 2 layer-0 guards: stress-identity machinery on the PBT grid
+  let m = mp_build_mask
+  let bt1 = float_arr_new mp_nrnz 0.0
+  let _ = st_fill_an bt1 8000.0 0
+  let tv = 1.0 * sd_volume_integral bt1 m
+  let sg1 = sd_surface_integral bt1 m
+  let ts = float_arr_get sg1 0 + float_arr_get sg1 1 + float_arr_get sg1 2 + float_arr_get sg1 3 + float_arr_get sg1 4
+  let f18 = check "stress identity (analytic field) < 1e-6"
+              (fabs (tv / ts - 1.0) < 0.000001) f17
+  let btp = mp_build_btp 8000.0
+  let bt3 = float_arr_new mp_nrnz 0.0
+  let _ = st_fill_dec bt3 8000.0 0
+  let _ = sd_fill_ghosts bt3 btp m
+  let sg3 = sd_surface_integral bt3 m
+  let bp_ref = mu0_4pi * log (pbt_r_ch / pbt_r_c) * 64000000.0
+  let aif_ref = tb_aif 8000.0
+  let f19 = check "surface BP matches eq 13 (1e-3)"
+              (fabs (float_arr_get sg3 0 / bp_ref - 1.0) < 0.001) f18
+  let f20 = check "surface AIF matches eq 14 (1%)"
+              (fabs (float_arr_get sg3 2 / aif_ref - 1.0) < 0.01) f19
+  -- the prescription-as-constant compiler-bug guard: tip btp must be sane
+  let tipv = 1.0 * float_arr_get btp (19 * mp_nz + 80)
+  let f21 = check "tip prescription sane (compiler-bug guard)"
+              (near tipv 0.0328 0.001) f20
+  if f21 == 0 then
+    let _ = print "SELFTEST PASS (21 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f17, " of 17)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f21, " of 21)"])
     1
+
+-- analytic smooth field / decaying coax fills (phase2_identity mirrors)
+st_fill_an bt jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let r = mp_r_of j
+    let v = mu0_2pi * jtot * (r / (pbt_r_ch * pbt_r_ch)) * (1.0 - mp_z_of z / 0.13)
+    let _ = float_arr_set bt i v
+    st_fill_an bt jtot (i + 1)
+
+st_fill_dec bt jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let r = mp_r_of j
+    let ra = if r < 0.001 then 0.001 else r
+    let g = 1.0 - mp_z_of z / 0.13
+    let _ = float_arr_set bt i (mu0_2pi * jtot * g / ra)
+    st_fill_dec bt jtot (i + 1)

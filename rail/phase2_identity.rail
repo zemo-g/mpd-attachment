@@ -1,0 +1,116 @@
+-- rail/phase2_identity.rail -- Layer 0 of Phase 2: validate the
+-- Maxwell-stress diagnostic machinery BEFORE any solver step runs.
+--
+-- Test 1 (identity, analytic field): a smooth B_theta with real j_r,
+--   evaluated in every cell; int_V j_r B dV must equal the grouped surface
+--   sum to discretization error. This calibrates the error scale the
+--   solver's identity check is later held to.
+-- Test 2 (invariant): a z-uniform field has j_r = 0 and column-wise
+--   cancelling faces; both sides must vanish (roundoff).
+-- Test 3 (per-surface vs analytics): fluid filled arbitrarily, ghosts
+--   filled from the attachment prescription; the grouped surface sums must
+--   reproduce eqs 13/14/15 (semi_lib) and the flat-tip 0.25 phi^2 term.
+--
+-- Run: rail_native run rail/phase2_identity.rail
+
+import "rail/pbt.rail"
+import "rail/semi_lib.rail"
+import "rail/mhd_pbt.rail"
+import "rail/stress_diag.rail"
+
+-- test-1 field: bt = mu0/2pi * J * (r / r_ch^2) * (1 - z/L)
+an_bt jtot j i =
+  let r = mp_r_of j
+  let z = mp_z_of i
+  mu0_2pi * jtot * (r / (pbt_r_ch * pbt_r_ch)) * (1.0 - z / 0.13)
+
+fill_an bt jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let _ = float_arr_set bt i (an_bt jtot j z)
+    fill_an bt jtot (i + 1)
+
+-- test-2 field: z-uniform coax
+fill_coax bt jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let r = mp_r_of j
+    let ra = if r < 0.001 then 0.001 else r
+    let _ = float_arr_set bt i (mu0_2pi * jtot / ra)
+    fill_coax bt jtot (i + 1)
+
+-- test-3 fluid fill: decaying coax (ghosts overwritten by prescription)
+fill_decay bt jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let r = mp_r_of j
+    let ra = if r < 0.001 then 0.001 else r
+    let g = 1.0 - mp_z_of z / 0.13
+    let _ = float_arr_set bt i (mu0_2pi * jtot * g / ra)
+    fill_decay bt jtot (i + 1)
+
+sum5 a = float_arr_get a 0 + float_arr_get a 1 + float_arr_get a 2 + float_arr_get a 3 + float_arr_get a 4
+
+show_groups a =
+  print (cat ["    BP=", show_float (float_arr_get a 0),
+              "  CT=", show_float (float_arr_get a 1),
+              "  AIF=", show_float (float_arr_get a 2),
+              "  AOF=", show_float (float_arr_get a 3),
+              "  OUT=", show_float (float_arr_get a 4)])
+
+run_test3 m btp3 jtot =
+  let bt = float_arr_new mp_nrnz 0.0
+  let _ = fill_decay bt jtot 0
+  let _ = sd_fill_ghosts bt btp3 m
+  let sg = sd_surface_integral bt m
+  let _ = print (cat ["  test 3 (prescription vs eqs 13-15), J=", show (to_int jtot)])
+  let _ = show_groups sg
+  let bp_ref = mu0_4pi * log (pbt_r_ch / pbt_r_c) * jtot * jtot
+  let aif_ref = tb_aif jtot
+  let ct_ref = mu0_4pi * 0.25 * pbt_phi * pbt_phi * jtot * jtot
+  let _ = print (cat ["    refs: BP=", show_float bp_ref,
+                      "  CT(flat tip)=", show_float ct_ref,
+                      "  AIF=", show_float aif_ref, "  AOF=0"])
+  let bp_err = float_arr_get sg 0 / bp_ref - 1.0
+  let aif_d = float_arr_get sg 2 - aif_ref
+  let ct_err = float_arr_get sg 1 / ct_ref - 1.0
+  print (cat ["    rel err: BP=", show_float bp_err, "  CT=", show_float ct_err,
+              "  AIF abs diff=", show_float aif_d, " N"])
+
+main =
+  let m = mp_build_mask
+  let jt = 8000.0
+
+  -- test 1
+  let bt1 = float_arr_new mp_nrnz 0.0
+  let _ = fill_an bt1 jt 0
+  let tv = sd_volume_integral bt1 m
+  let sg1 = sd_surface_integral bt1 m
+  let ts = sum5 sg1
+  let _ = print "  test 1 (identity on smooth analytic field, J=8 kA)"
+  let _ = print (cat ["    T_vol=", show_float tv, "  T_surf=", show_float ts,
+                      "  rel diff=", show_float (tv / ts - 1.0)])
+  let _ = show_groups sg1
+
+  -- test 2
+  let bt2 = float_arr_new mp_nrnz 0.0
+  let _ = fill_coax bt2 jt 0
+  let tv2 = sd_volume_integral bt2 m
+  let sg2 = sd_surface_integral bt2 m
+  let ts2 = sum5 sg2
+  let _ = print (cat ["  test 2 (z-uniform invariant): T_vol=", show_float tv2,
+                      "  T_surf=", show_float ts2])
+
+  -- test 3 at two currents (below and above J_t1)
+  let btp8 = mp_build_btp 8000.0
+  let _ = run_test3 m btp8 8000.0
+  let btp12 = mp_build_btp 12000.0
+  let _ = run_test3 m btp12 12000.0
+  let btp3k = mp_build_btp 3000.0
+  let _ = run_test3 m btp3k 3000.0
+  0

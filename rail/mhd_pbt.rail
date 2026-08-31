@@ -1,0 +1,210 @@
+-- rail/mhd_pbt.rail -- PBT grid, masks, and prescribed-attachment B_theta.
+-- Phase 2 foundation: the geometry and the attachment prescription are
+-- shared by the stress diagnostic (rail/stress_diag.rail) and the solver
+-- (rail/mpd_solver.rail).
+--
+-- Dependency: callers must import "rail/pbt.rail" FIRST (no dedupe).
+--
+-- Grid: face-aligned so every electrode surface lands on a cell face.
+--   dr = 0.5 mm, dz = 1.25 mm
+--   r_center(j) = (j - 0.5) dr   j = 0 axis ghost, j = 129 wall ghost
+--   z_center(i) = (i - 0.5) dz   i = 0 backplate ghost, i = 105 outflow ghost
+--   cathode face r_c = 0.0095 = 19 dr; anode bore r_a = 0.051 = 102 dr;
+--   wall r_ch = 0.064 = 128 dr; tip l_c = 0.10 = 80 dz;
+--   anode faces z = 0.1025 / 0.1125 (82 / 90 dz; t_a approximated 10 mm
+--   instead of 9.5 -- half-mm slop on the bore depth, documented).
+--
+-- Masks: 0 fluid, 1 cathode, 2 anode, 3 axis ghost, 4 wall ghost,
+--        5 backplate ghost (wall part), 6 backplate ghost (inlet),
+--        7 outflow ghost.
+--
+-- Attachment (Rudolph, argon 6 g/s; program.md eq set):
+--   cathode side: I(z) = J (1 - (1-phi) z / l_c), phi J emitted at the tip
+--   tip (flat, uniform j): I(r) = phi J r^2 / r_c^2
+--   anode inner face: I(r) = J - J_lip - j_i pi (r^2 - r_a^2), j_i capped
+--   lip bore: I(depth) = J_lip (1 - depth / t_a)
+--   backplate: I = J for r > r_c; chamber wall: I = J upstream of anode,
+--   0 downstream; outflow: 0.
+
+mp_nr = 130
+mp_nz = 106
+mp_nrnz = 13780
+mp_state = 68900
+
+mp_dr = 0.0005
+mp_dz = 0.00125
+
+-- hoisted index constants (Rail inline named-int arithmetic trap)
+mp_nrm1 = 129
+mp_nrm2 = 128
+mp_nzm1 = 105
+mp_nzm2 = 104
+
+mp_j_cath = 19      -- cathode solid: 1..19 (face at 19 dr = r_c)
+mp_j_fluid0 = 20
+mp_i_tip = 80       -- cathode solid axial: 1..80 (face at 80 dz = l_c)
+mp_i_tip1 = 81
+mp_j_anode = 103    -- anode solid radial: 103..128 (face at 102 dr = r_a)
+mp_j_anodem1 = 102
+mp_i_an0 = 83       -- anode solid axial: 83..90
+mp_i_an1 = 90
+mp_i_aif = 82       -- fluid row just upstream of the anode inner face
+mp_i_aof = 91       -- fluid row just downstream of the anode outer face
+
+-- inlet bands on the backplate ghost row (JPP-2001: 54% annulus at the
+-- cathode base, 46% ring of holes at r = 3.8 cm)
+mp_j_in1a = 20
+mp_j_in1b = 36      -- annulus r in [0.0095, 0.018)
+mp_j_in2a = 71
+mp_j_in2b = 82      -- ring r in [0.035, 0.041)
+
+mp_f_rho = 0
+mp_f_mr = 1
+mp_f_mz = 2
+mp_f_en = 3
+mp_f_bt = 4
+
+mp_idx f j i = f * mp_nrnz + j * mp_nz + i
+mp_get s f j i = float_arr_get s (mp_idx f j i)
+mp_put s f j i v = float_arr_set s (mp_idx f j i) v
+
+mp_r_of j = (to_float j - 0.5) * mp_dr
+mp_z_of i = (to_float i - 0.5) * mp_dz
+
+mu0 = 1.2566370614359173e-6
+inv_mu0 = 795774.7154594768
+mu0_2pi = 2.0e-7
+
+-- ── mask ──────────────────────────────────────────────────
+mp_mask_of j i =
+  if j == 0 then 3
+  else if j >= mp_nrm1 then 4
+  else if i >= mp_nzm1 then 7
+  else if i == 0 then
+    let in1 = if j >= mp_j_in1a then j <= mp_j_in1b else false
+    let in2 = if j >= mp_j_in2a then j <= mp_j_in2b else false
+    if in1 then 6 else if in2 then 6 else 5
+  else
+    let in_cath_r = j <= mp_j_cath
+    let in_cath_z = i <= mp_i_tip
+    let in_an_r = j >= mp_j_anode
+    let in_an_z = if i >= mp_i_an0 then i <= mp_i_an1 else false
+    if in_cath_r then (if in_cath_z then 1 else 0)
+    else if in_an_r then (if in_an_z then 2 else 0)
+    else 0
+
+mp_build_mask_loop m i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let _ = arr_set m i (mp_mask_of j z)
+    mp_build_mask_loop m (i + 1)
+
+mp_build_mask =
+  let m = arr_new mp_nrnz 0
+  let _ = mp_build_mask_loop m 0
+  m
+
+-- ── prescribed attachment: enclosed current + B_theta ─────
+-- j_lip fraction of J (argon 6 g/s Rudolph)
+mp_j_lip jtot =
+  if jtot <= pbt_j_t1 then 0.0
+  else if jtot <= pbt_j_t2 then jtot - pbt_j_t1
+  else pbt_j_t2 - pbt_j_t1
+
+-- enclosed current on the cathode side surface at height z
+mp_ienc_cath jtot z =
+  let zf = if z > pbt_l_c then pbt_l_c else z
+  jtot * (1.0 - (1.0 - pbt_phi) * zf / pbt_l_c)
+
+-- enclosed current on the (flat) tip at radius r
+mp_ienc_tip jtot r = pbt_phi * jtot * r * r / (pbt_r_c * pbt_r_c)
+
+-- Enclosed current on the anode inner face at radius r.
+-- Ampere loop on the face plane: encloses the lip current (crosses inside
+-- r_a) plus face current attaching INSIDE r; increases outward, J at the
+-- wall. Expanding B^2 over this profile reproduces eq 14's coefficients
+-- exactly ((J - j_i pi r_ch^2)^2 = (J_lip - j_i pi r_a^2)^2, etc).
+mp_ienc_aif jtot r =
+  let jlip = mp_j_lip jtot
+  let ji = rudolph_j_i jtot
+  let att = ji * pi_f * (r * r - pbt_r_a * pbt_r_a)
+  let v = 1.0 * jlip + att
+  if v < 0.0 then 0.0 else if v > jtot then jtot else v
+
+-- enclosed current in the lip bore at depth d into the anode
+mp_ienc_lip jtot d =
+  let jlip = mp_j_lip jtot
+  let t = d / 0.01
+  let tc = if t > 1.0 then 1.0 else if t < 0.0 then 0.0 else t
+  jlip * (1.0 - tc)
+
+mp_bt_of ienc r =
+  let rs = if r < 0.000001 then 0.000001 else r
+  mu0_2pi * ienc / rs
+
+-- Prescribed FACE B_theta for a non-fluid cell (j,i), on the face toward
+-- its fluid neighbor. Priority: r-face first, then z-face.
+-- Returns the face value; ghost fill is ghost = 2*face - fluid.
+-- NOTE: every nested user-fn float result is let-bound and forced float
+-- with 1.0 * before reuse -- passing one user call's result directly as
+-- another's argument miscompiles in some compilation units (marker quirk;
+-- bit garbage observed at the tip corner in the solver unit, 2026-08-31).
+mp_bt_presc jtot j i =
+  let m = mp_mask_of j i
+  if m == 3 then 0.0
+  else if m == 4 then
+    -- chamber wall: J upstream of the anode plane, 0 downstream
+    let z = 1.0 * mp_z_of i
+    if z < 0.1025 then 1.0 * mp_bt_of jtot pbt_r_ch else 0.0
+  else if m == 5 then
+    -- backplate wall face at z=0, radius of the cell
+    let r = 1.0 * mp_r_of j
+    if j <= mp_j_cath then 1.0 * mp_bt_of jtot pbt_r_c else 1.0 * mp_bt_of jtot r
+  else if m == 6 then
+    let r = 1.0 * mp_r_of j
+    1.0 * mp_bt_of jtot r
+  else if m == 7 then 0.0
+  else if m == 1 then
+    -- cathode: side face (r = r_c) unless this is the tip row (i = mp_i_tip)
+    if i == mp_i_tip then
+      let r = 1.0 * mp_r_of j
+      let itip = 1.0 * mp_ienc_tip jtot r
+      1.0 * mp_bt_of itip r
+    else
+      let z = 1.0 * mp_z_of i
+      let icat = 1.0 * mp_ienc_cath jtot z
+      1.0 * mp_bt_of icat pbt_r_c
+  else if m == 2 then
+    -- anode: bore face (r = r_a) for j == mp_j_anode; inner face for
+    -- i == mp_i_an0; outer face for i == mp_i_an1
+    if j == mp_j_anode then
+      let d = 1.0 * mp_z_of i - 0.1025
+      let ilip = 1.0 * mp_ienc_lip jtot d
+      1.0 * mp_bt_of ilip pbt_r_a
+    else if i == mp_i_an0 then
+      let r = 1.0 * mp_r_of j
+      let iaif = 1.0 * mp_ienc_aif jtot r
+      1.0 * mp_bt_of iaif r
+    else if i == mp_i_an1 then
+      -- outer face: below J_t2 no current downstream
+      0.0
+    else 0.0
+  else 0.0
+
+-- Build the prescription array once per run (0 for fluid cells).
+mp_build_btp_loop btp jtot i =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let m = mp_mask_of j z
+    let v = if m == 0 then 0.0 else mp_bt_presc jtot j z
+    let _ = float_arr_set btp i v
+    mp_build_btp_loop btp jtot (i + 1)
+
+mp_build_btp jtot =
+  let btp = float_arr_new mp_nrnz 0.0
+  let _ = mp_build_btp_loop btp jtot 0
+  btp

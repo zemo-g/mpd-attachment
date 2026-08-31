@@ -1,0 +1,190 @@
+-- rail/stress_diag.rail -- Maxwell-stress identity + per-surface diagnostics.
+-- Operates on any B_theta field (and full state) on the PBT grid.
+--
+-- Dependency: import "rail/pbt.rail" then "rail/mhd_pbt.rail" first.
+--
+-- The identity (program.md): T_b = int_V j_r B_theta dV = oint_S (beta.dS)_z.
+-- beta is diagonal for azimuthal-only B; only z-perpendicular faces
+-- contribute to the z component: backplate (BP), cathode tip (CT), anode
+-- inner face (AIF, negative), anode outer face (AOF), outflow (OUT).
+-- Face values are (cell + neighbor)/2 -- with ghost-filled fields this IS
+-- the prescribed face value; with an analytic field it is 2nd-order.
+--
+-- Volume side uses the same central-difference j_r the solver's physics
+-- sees, so agreement tests the discrete bookkeeping; the analytic-field
+-- runner (rail/phase2_identity.rail) calibrates the discretization error.
+
+-- ── ghost fill for a standalone B_theta array (mp_nrnz floats) ──
+-- bt: field; btp: prescription (mp_build_btp); m: mask (mp_build_mask)
+sd_ghost_cell bt btp m j i =
+  let k = j * mp_nz + i
+  let mk = arr_get m k
+  if mk == 0 then 0
+  else if mk == 3 then
+    float_arr_set bt k (0.0 - float_arr_get bt (mp_nz + i))
+  else if mk == 4 then
+    let fl = float_arr_get bt (mp_nrm2 * mp_nz + i)
+    float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+  else if mk == 5 then
+    let fl = float_arr_get bt (j * mp_nz + 1)
+    float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+  else if mk == 6 then
+    let fl = float_arr_get bt (j * mp_nz + 1)
+    float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+  else if mk == 7 then
+    let fl = float_arr_get bt (j * mp_nz + mp_nzm2)
+    float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+  else if mk == 1 then
+    -- cathode: tip row faces fluid above in z; side column faces j+1
+    if i == mp_i_tip then
+      let fl = float_arr_get bt (j * mp_nz + mp_i_tip1)
+      float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+    else if j == mp_j_cath then
+      let fl = float_arr_get bt (mp_j_fluid0 * mp_nz + i)
+      float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+    else float_arr_set bt k (float_arr_get btp k)
+  else
+    -- anode: bore column faces j-1; inner face row faces i-1; outer i+1
+    if j == mp_j_anode then
+      let fl = float_arr_get bt ((mp_j_anode - 1) * mp_nz + i)
+      float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+    else if i == mp_i_an0 then
+      let fl = float_arr_get bt (j * mp_nz + mp_i_aif)
+      float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+    else if i == mp_i_an1 then
+      let fl = float_arr_get bt (j * mp_nz + mp_i_aof)
+      float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+    else float_arr_set bt k (float_arr_get btp k)
+
+sd_ghost_loop bt btp m i =
+  if i >= mp_nrnz then 0
+  else
+    let _ = sd_ghost_cell bt btp m (i / mp_nz) (i % mp_nz)
+    sd_ghost_loop bt btp m (i + 1)
+
+sd_fill_ghosts bt btp m = sd_ghost_loop bt btp m 0
+
+-- ── volume integral: sum over fluid cells of j_r B_theta 2 pi r dr dz ──
+sd_vol_cell bt m j i acc =
+  let k = j * mp_nz + i
+  if arr_get m k == 0 then
+    let btc = float_arr_get bt k
+    let btip = float_arr_get bt (j * mp_nz + i + 1)
+    let btim = float_arr_get bt (j * mp_nz + i - 1)
+    let jr = 0.0 - inv_mu0 * (btip - btim) / (2.0 * mp_dz)
+    let r = mp_r_of j
+    let dv = 6.283185307179586 * r * mp_dr * mp_dz
+    float_arr_set acc 0 (float_arr_get acc 0 + jr * btc * dv)
+  else 0
+
+sd_vol_loop bt m i acc =
+  if i >= mp_nrnz then 0
+  else
+    let _ = sd_vol_cell bt m (i / mp_nz) (i % mp_nz) acc
+    sd_vol_loop bt m (i + 1) acc
+
+sd_volume_integral bt m =
+  let acc = float_arr_new 1 0.0
+  let _ = sd_vol_loop bt m 0 acc
+  float_arr_get acc 0
+
+-- ── surface integral, grouped ──
+-- acc slots: 0 BP, 1 CT, 2 AIF, 3 AOF, 4 OUT (signed contributions)
+sd_face_term bt j i jn zn sgn =
+  -- face between fluid (j,i) and non-fluid (jn,zn); returns signed
+  -- (beta.dS)_z contribution: sgn * B_f^2/(2 mu0) * 2 pi r dr
+  let btf = 0.5 * (float_arr_get bt (j * mp_nz + i) + float_arr_get bt (jn * mp_nz + zn))
+  let r = mp_r_of j
+  sgn * btf * btf * inv_mu0 * 0.5 * 6.283185307179586 * r * mp_dr
+
+sd_surf_cell bt m j i acc =
+  let k = j * mp_nz + i
+  if arr_get m k == 0 then
+    -- bottom face (neighbor i-1): outward normal -z -> +B^2/2mu0
+    let mb = arr_get m (j * mp_nz + i - 1)
+    let _ = if mb == 5 then
+        let v = sd_face_term bt j i j (i - 1) 1.0
+        float_arr_set acc 0 (float_arr_get acc 0 + v)
+      else if mb == 6 then
+        let v = sd_face_term bt j i j (i - 1) 1.0
+        float_arr_set acc 0 (float_arr_get acc 0 + v)
+      else if mb == 1 then
+        let v = sd_face_term bt j i j (i - 1) 1.0
+        float_arr_set acc 1 (float_arr_get acc 1 + v)
+      else if mb == 2 then
+        let v = sd_face_term bt j i j (i - 1) 1.0
+        float_arr_set acc 3 (float_arr_get acc 3 + v)
+      else 0
+    -- top face (neighbor i+1): outward normal +z -> -B^2/2mu0
+    let mt = arr_get m (j * mp_nz + i + 1)
+    if mt == 2 then
+      let v = sd_face_term bt j i j (i + 1) (0.0 - 1.0)
+      float_arr_set acc 2 (float_arr_get acc 2 + v)
+    else if mt == 7 then
+      let v = sd_face_term bt j i j (i + 1) (0.0 - 1.0)
+      float_arr_set acc 4 (float_arr_get acc 4 + v)
+    else 0
+  else 0
+
+sd_surf_loop bt m i acc =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let ok1 = if j >= 1 then j <= mp_nrm2 else false
+    let ok = if ok1 then (if z >= 1 then z <= mp_nzm2 else false) else false
+    let _ = if ok then sd_surf_cell bt m j z acc else 0
+    sd_surf_loop bt m (i + 1) acc
+
+-- returns acc [BP, CT, AIF, AOF, OUT]
+sd_surface_integral bt m =
+  let acc = float_arr_new 5 0.0
+  let _ = sd_surf_loop bt m 0 acc
+  acc
+
+-- ── gasdynamic per-surface sums: -oint p (z.dS) over the same faces ──
+-- p taken from the adjacent fluid cell (first order). Same slot layout.
+sd_p_cell st m j i acc =
+  let k = j * mp_nz + i
+  if arr_get m k == 0 then
+    let p = mp_pressure_of st j i
+    let da = 6.283185307179586 * mp_r_of j * mp_dr
+    let mb = arr_get m (j * mp_nz + i - 1)
+    let _ = if mb == 5 then float_arr_set acc 0 (float_arr_get acc 0 + p * da)
+      else if mb == 6 then float_arr_set acc 0 (float_arr_get acc 0 + p * da)
+      else if mb == 1 then float_arr_set acc 1 (float_arr_get acc 1 + p * da)
+      else if mb == 2 then float_arr_set acc 3 (float_arr_get acc 3 + p * da)
+      else 0
+    let mt = arr_get m (j * mp_nz + i + 1)
+    if mt == 2 then float_arr_set acc 2 (float_arr_get acc 2 - p * da)
+    else if mt == 7 then float_arr_set acc 4 (float_arr_get acc 4 - p * da)
+    else 0
+  else 0
+
+sd_p_loop st m i acc =
+  if i >= mp_nrnz then 0
+  else
+    let j = i / mp_nz
+    let z = i % mp_nz
+    let ok1 = if j >= 1 then j <= mp_nrm2 else false
+    let ok = if ok1 then (if z >= 1 then z <= mp_nzm2 else false) else false
+    let _ = if ok then sd_p_cell st m j z acc else 0
+    sd_p_loop st m (i + 1) acc
+
+sd_pressure_surfaces st m =
+  let acc = float_arr_new 5 0.0
+  let _ = sd_p_loop st m 0 acc
+  acc
+
+-- pressure recovery on the full state (mirrors solver's)
+mp_pressure_of st j i =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < 0.00000001 then 0.00000001 else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let e = mp_get st mp_f_en j i
+  let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+  let me = 0.5 * bt * bt * inv_mu0
+  let p_raw = 0.6666666666666667 * (e - ke - me)
+  if p_raw < 0.000001 then 0.000001 else p_raw

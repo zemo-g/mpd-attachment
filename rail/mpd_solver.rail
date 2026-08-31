@@ -1,0 +1,418 @@
+-- rail/mpd_solver.rail -- Phase 2 solver: axisymmetric resistive MHD with
+-- Hall term, azimuthal-only self-field B_theta, attachment PRESCRIBED as
+-- B_theta Dirichlet faces (rail/mhd_pbt.rail).
+--
+-- Dependencies (import order in the runner, no dedupe):
+--   rail/pbt.rail, rail/mhd_pbt.rail, rail/stress_diag.rail, this file.
+-- The RUNNER must define: run_hall (1.0 on / 0.0 off).
+--
+-- Scheme notes (deliberate, see program.md phase 2):
+--   Fluxes carry total pressure p_t = p + B^2/2mu0; the ONLY momentum
+--   sources are the axisym geometric ones:
+--     d(rho)/dt += -rho v_r / r
+--     d(m_r)/dt += -m_r v_r / r - B^2/(mu0 r)     (hoop tension)
+--     d(m_z)/dt += -m_z v_r / r
+--     d(E)/dt   += -(E + p_t) v_r / r
+--   No explicit J x B source: with azimuthal-only B the Lorentz force IS
+--   the Maxwell stress already present in flux + hoop. (The stdlib
+--   mhd_mpd.rail pack double-counts this; deliberately not reused.)
+--   B_theta axial flux is +v_z B_theta (divergence-form advection; the
+--   stdlib core's -v_z B_theta is an in-plane-B holdover).
+--   Non-ideal induction: E' = eta j + (j x B)/(n e) - grad(p_e)/(n e),
+--   dB/dt += dEz/dr - dEr/dz. E_total is NOT separately heated: p absorbs
+--   magnetic-energy changes (exact global conservation; local Ohmic
+--   deposition approximate; Hall spuriously exchanges with p at O(its
+--   transport) - acceptable while Hall runs are short, documented).
+--   eta = Spitzer 5e-5/T_eV^1.5 capped to [1e-7, 2e-5] (dt stability);
+--   Hall density floor n_hall = 1e19 m^-3 (standard vacuum clamp).
+
+gamma_m1 = 0.6666666666666667
+e_charge = 1.602176634e-19
+m_ion_ar = 6.633e-26
+cfl_c = 0.30
+eta_cap = 2.0e-5
+eta_floor = 1.0e-7
+n_hall_floor = 1.0e19
+
+-- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
+in_v = 300.0
+in_rho_ann = 0.014707
+in_rho_ring = 0.0064220
+kT_m = 62444.0
+
+rho_floor = 0.00000001
+amb_rho = 0.00003
+amb_p = 1.0
+
+-- ── pressure/speed on state (rho floor + p floor) ──
+mv_pressure st j i =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let e = mp_get st mp_f_en j i
+  let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+  let me = 0.5 * bt * bt * inv_mu0
+  let p_raw = gamma_m1 * (e - ke - me)
+  if p_raw < 0.000001 then 0.000001 else p_raw
+
+mv_speed st j i =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let p = mv_pressure st j i
+  let a2 = 1.6666666666666667 * p / rho_safe
+  let va2 = bt * bt * inv_mu0 / rho_safe
+  let v2 = (mr * mr + mz * mz) / (rho_safe * rho_safe)
+  sqrt v2 + sqrt (a2 + va2)
+
+-- ── fluxes ──
+-- fb is a single 20-float scratch: offsets 0 r-plus, 5 r-minus, 10 z-plus,
+-- 15 z-minus (one allocation per run; keeps loop arity <= 8 for TCO)
+mv_flux_r st j i fb off =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let e = mp_get st mp_f_en j i
+  let vr = mr / rho_safe
+  let p = mv_pressure st j i
+  let pt = p + 0.5 * bt * bt * inv_mu0
+  let _ = float_arr_set fb off mr
+  let _ = float_arr_set fb (off + 1) (mr * vr + pt)
+  let _ = float_arr_set fb (off + 2) (mz * vr)
+  let _ = float_arr_set fb (off + 3) ((e + pt) * vr)
+  float_arr_set fb (off + 4) (vr * bt)
+
+mv_flux_z st j i fb off =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let e = mp_get st mp_f_en j i
+  let vz = mz / rho_safe
+  let p = mv_pressure st j i
+  let pt = p + 0.5 * bt * bt * inv_mu0
+  let _ = float_arr_set fb off mz
+  let _ = float_arr_set fb (off + 1) (mr * vz)
+  let _ = float_arr_set fb (off + 2) (mz * vz + pt)
+  let _ = float_arr_set fb (off + 3) ((e + pt) * vz)
+  float_arr_set fb (off + 4) (vz * bt)
+
+-- ── ghost fill for the full state ──
+-- gas: mirror with normal momentum negated (free slip), en rebuilt so the
+-- ghost holds the fluid's p with its own momenta and bt.
+mv_ghost_gas st jg ig jf fi nsign_r nsign_z btg =
+  let rho = mp_get st mp_f_rho jf fi
+  let mr = mp_get st mp_f_mr jf fi * nsign_r
+  let mz = mp_get st mp_f_mz jf fi * nsign_z
+  let p = mv_pressure st jf fi
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+  let me = 0.5 * btg * btg * inv_mu0
+  let _ = mp_put st mp_f_rho jg ig rho
+  let _ = mp_put st mp_f_mr jg ig mr
+  let _ = mp_put st mp_f_mz jg ig mz
+  let _ = mp_put st mp_f_en jg ig (p / gamma_m1 + ke + me)
+  mp_put st mp_f_bt jg ig btg
+
+mv_ghost_cell st btp m j i =
+  let k = j * mp_nz + i
+  let mk = arr_get m k
+  if mk == 0 then 0
+  else if mk == 3 then
+    let btg = 0.0 - mp_get st mp_f_bt 1 i
+    mv_ghost_gas st j i 1 i (0.0 - 1.0) 1.0 btg
+  else if mk == 4 then
+    let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt mp_nrm2 i
+    mv_ghost_gas st j i mp_nrm2 i (0.0 - 1.0) 1.0 btg
+  else if mk == 5 then
+    let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
+    mv_ghost_gas st j i j 1 1.0 (0.0 - 1.0) btg
+  else if mk == 6 then
+    -- inlet: gas Dirichlet; bt face Dirichlet like every other boundary
+    let rho = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
+    let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
+    let ke = 0.5 * rho * in_v * in_v
+    let me = 0.5 * btg * btg * inv_mu0
+    let _ = mp_put st mp_f_rho j i rho
+    let _ = mp_put st mp_f_mr j i 0.0
+    let _ = mp_put st mp_f_mz j i (rho * in_v)
+    let _ = mp_put st mp_f_en j i (rho * kT_m / gamma_m1 + ke + me)
+    mp_put st mp_f_bt j i btg
+  else if mk == 7 then
+    let btg = 0.0 - mp_get st mp_f_bt j mp_nzm2
+    mv_ghost_gas st j i j mp_nzm2 1.0 1.0 btg
+  else if mk == 1 then
+    if i == mp_i_tip then
+      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_tip1
+      mv_ghost_gas st j i j mp_i_tip1 1.0 (0.0 - 1.0) btg
+    else if j == mp_j_cath then
+      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt mp_j_fluid0 i
+      mv_ghost_gas st j i mp_j_fluid0 i (0.0 - 1.0) 1.0 btg
+    else mv_ghost_solid st btp j i
+  else
+    if j == mp_j_anode then
+      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt mp_j_anodem1 i
+      mv_ghost_gas st j i mp_j_anodem1 i (0.0 - 1.0) 1.0 btg
+    else if i == mp_i_an0 then
+      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_aif
+      mv_ghost_gas st j i j mp_i_aif 1.0 (0.0 - 1.0) btg
+    else if i == mp_i_an1 then
+      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_aof
+      mv_ghost_gas st j i j mp_i_aof 1.0 (0.0 - 1.0) btg
+    else mv_ghost_solid st btp j i
+
+mv_ghost_solid st btp j i =
+  let btg = float_arr_get btp (j * mp_nz + i)
+  let me = 0.5 * btg * btg * inv_mu0
+  let _ = mp_put st mp_f_rho j i amb_rho
+  let _ = mp_put st mp_f_mr j i 0.0
+  let _ = mp_put st mp_f_mz j i 0.0
+  let _ = mp_put st mp_f_en j i (amb_p / gamma_m1 + me)
+  mp_put st mp_f_bt j i btg
+
+mv_ghost_loop st btp m i =
+  if i >= mp_nrnz then 0
+  else
+    let _ = mv_ghost_cell st btp m (i / mp_nz) (i % mp_nz)
+    mv_ghost_loop st btp m (i + 1)
+
+mv_apply_ghosts st btp m = mv_ghost_loop st btp m 0
+
+-- ── LxF interior + geometric sources ──
+mv_lxf_field st ns cr cz fb j i f =
+  let fa = (mp_get st f (j + 1) i + mp_get st f (j - 1) i + mp_get st f j (i + 1) + mp_get st f j (i - 1)) / 4.0
+  let dfr = float_arr_get fb f - float_arr_get fb (5 + f)
+  let dfz = float_arr_get fb (10 + f) - float_arr_get fb (15 + f)
+  float_arr_set ns (mp_idx f j i) (fa - cr * dfr - cz * dfz)
+
+mv_lxf_apply st ns cr cz fb ji =
+  let j = ji / mp_nz
+  let i = ji % mp_nz
+  let _ = mv_lxf_field st ns cr cz fb j i 0
+  let _ = mv_lxf_field st ns cr cz fb j i 1
+  let _ = mv_lxf_field st ns cr cz fb j i 2
+  let _ = mv_lxf_field st ns cr cz fb j i 3
+  mv_lxf_field st ns cr cz fb j i 4
+
+mv_geom_src st ns dt j i =
+  let r = mp_r_of j
+  let inv_r = 1.0 / r
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i
+  let mz = mp_get st mp_f_mz j i
+  let bt = mp_get st mp_f_bt j i
+  let e = mp_get st mp_f_en j i
+  let vr = mr / rho_safe
+  let p = mv_pressure st j i
+  let pt = p + 0.5 * bt * bt * inv_mu0
+  let _ = mp_put ns mp_f_rho j i (mp_get ns mp_f_rho j i - dt * rho * vr * inv_r)
+  let _ = mp_put ns mp_f_mr j i (mp_get ns mp_f_mr j i - dt * (mr * vr + bt * bt * inv_mu0) * inv_r)
+  let _ = mp_put ns mp_f_mz j i (mp_get ns mp_f_mz j i - dt * mz * vr * inv_r)
+  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i - dt * (e + pt) * vr * inv_r)
+
+mv_cell st ns cr cz fb ji =
+  let j = ji / mp_nz
+  let i = ji % mp_nz
+  let _ = mv_flux_r st (j + 1) i fb 0
+  let _ = mv_flux_r st (j - 1) i fb 5
+  let _ = mv_flux_z st j (i + 1) fb 10
+  let _ = mv_flux_z st j (i - 1) fb 15
+  mv_lxf_apply st ns cr cz fb ji
+
+mv_lxf_loop st ns m cr cz fb ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then mv_cell st ns cr cz fb ji else 0
+    mv_lxf_loop st ns m cr cz fb (ji + 1)
+
+mv_geom_loop st ns m dt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then mv_geom_src st ns dt (ji / mp_nz) (ji % mp_nz) else 0
+    mv_geom_loop st ns m dt (ji + 1)
+
+-- ── non-ideal induction ──
+mv_jr st j i = 0.0 - inv_mu0 * (mp_get st mp_f_bt j (i + 1) - mp_get st mp_f_bt j (i - 1)) / (2.0 * mp_dz)
+
+mv_jz st j i =
+  let r = mp_r_of j
+  let rp = r + mp_dr
+  let rm = r - mp_dr
+  let rs = if r < 0.0001 then 0.0001 else r
+  inv_mu0 * (rp * mp_get st mp_f_bt (j + 1) i - rm * mp_get st mp_f_bt (j - 1) i) / (2.0 * mp_dr * rs)
+
+mv_eta st j i =
+  let p = mv_pressure st j i
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let t_eV = p * m_ion_ar * 6.244e18 / rho_safe
+  let t_c = if t_eV < 0.1 then 0.1 else t_eV
+  let eta = 5.0e-5 / (t_c * sqrt t_c)
+  if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta
+
+-- build Er, Ez (into scr), pe = p/2 from the parr slice of scr
+mv_efield_cell st scr j i =
+  let k = j * mp_nz + i
+  let jr = mv_jr st j i
+  let jz = mv_jz st j i
+  let bt = mp_get st mp_f_bt j i
+  let eta = mv_eta st j i
+  let rho = mp_get st mp_f_rho j i
+  let ne_raw = rho / m_ion_ar
+  let ne = if ne_raw < n_hall_floor then n_hall_floor else ne_raw
+  let rh = 0.0 + run_hall
+  let hc = rh * bt / (ne * e_charge)
+  let pep = float_arr_get scr (scr_parr + j * mp_nz + i + 1)
+  let pem = float_arr_get scr (scr_parr + j * mp_nz + i - 1)
+  let dpe_dz = 0.5 * (pep - pem) / (2.0 * mp_dz)
+  let pjp = float_arr_get scr (scr_parr + (j + 1) * mp_nz + i)
+  let pjm = float_arr_get scr (scr_parr + (j - 1) * mp_nz + i)
+  let dpe_dr = 0.5 * (pjp - pjm) / (2.0 * mp_dr)
+  let inv_nee = rh / (ne * e_charge)
+  let _ = float_arr_set scr k (eta * jr - jz * hc - dpe_dr * inv_nee)
+  float_arr_set scr (scr_ez + k) (eta * jz + jr * hc - dpe_dz * inv_nee)
+
+mv_parr_loop st scr ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = float_arr_set scr (scr_parr + ji) (mv_pressure st (ji / mp_nz) (ji % mp_nz))
+    mv_parr_loop st scr (ji + 1)
+
+mv_efield_loop st scr unused ji =
+  if ji >= mp_nrnz then 0
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let ok1 = if j >= 1 then j <= mp_nrm2 else false
+    let ok = if ok1 then (if i >= 1 then i <= mp_nzm2 else false) else false
+    let _ = if ok then mv_efield_cell st scr j i else 0
+    mv_efield_loop st scr unused (ji + 1)
+
+mv_induct_cell ns scr dt j i =
+  let dez_dr = (float_arr_get scr (scr_ez + (j + 1) * mp_nz + i) - float_arr_get scr (scr_ez + (j - 1) * mp_nz + i)) / (2.0 * mp_dr)
+  let der_dz = (float_arr_get scr (j * mp_nz + i + 1) - float_arr_get scr (j * mp_nz + i - 1)) / (2.0 * mp_dz)
+  mp_put ns mp_f_bt j i (mp_get ns mp_f_bt j i + dt * (dez_dr - der_dz))
+
+-- induction stencil needs E at j+-1, i+-1 which needs the E stencil
+-- valid there: interior band j in [2, mp_nrm2-1], i in [2, mp_nzm2-1]
+mv_induct_loop ns m scr dt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let ok1 = if j >= 2 then j <= 127 else false
+    let ok2 = if i >= 2 then i <= 103 else false
+    let ok3 = if ok1 then ok2 else false
+    let ok = if ok3 then arr_get m ji == 0 else false
+    let _ = if ok then mv_induct_cell ns scr dt j i else 0
+    mv_induct_loop ns m scr dt (ji + 1)
+
+-- ── dt ──
+mv_vmax_loop st m ji acc =
+  if ji >= mp_nrnz then 1.0 * float_arr_get acc 0
+  else
+    let _ = if arr_get m ji == 0 then
+        -- 1.0 * forces float typing of the user-fn result (marker quirk);
+        -- without it the max-comparison runs on mistyped values
+        let v = 1.0 * mv_speed st (ji / mp_nz) (ji % mp_nz)
+        let cur = float_arr_get acc 0
+        if v > cur then float_arr_set acc 0 v else 0
+      else 0
+    mv_vmax_loop st m (ji + 1) acc
+
+mv_dt st m =
+  let acc = float_arr_new 1 1.0
+  let vmax = 1.0 * mv_vmax_loop st m 0 acc
+  let dt_cfl = cfl_c * mp_dr / vmax
+  -- resistive limit with capped eta
+  let dt_res = 0.2 * mp_dr * mp_dr / (eta_cap * inv_mu0)
+  let d1 = if dt_cfl < dt_res then dt_cfl else dt_res
+  let rh = 0.0 + run_hall
+  if rh > 0.5 then
+    -- whistler limit at the Hall density floor and current max B scale
+    let bmax = mv_bmax st m
+    let bs = if bmax < 0.001 then 0.001 else bmax
+    let dh = 0.1 * mp_dr * mp_dr * mu0 * n_hall_floor * e_charge / bs
+    if dh < d1 then dh else d1
+  else d1
+
+mv_bmax_loop st m ji acc =
+  if ji >= mp_nrnz then float_arr_get acc 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let b = mp_get st mp_f_bt (ji / mp_nz) (ji % mp_nz)
+        let ab = if b < 0.0 then 0.0 - b else b
+        let cur = float_arr_get acc 0
+        if ab > cur then float_arr_set acc 0 ab else 0
+      else 0
+    mv_bmax_loop st m (ji + 1) acc
+
+mv_bmax st m =
+  let acc = float_arr_new 1 0.0
+  let _ = mv_bmax_loop st m 0 acc
+  float_arr_get acc 0
+
+-- ── one full step: ghosts -> LxF -> geometry -> non-ideal induction ──
+-- ns and scratch are caller-owned and reused (no per-step allocation; the
+-- caller double-buffers st <-> ns). fb: 20-float flux scratch. scr: one
+-- 3*mp_nrnz array carved by offset (er 0, ez +13780, parr +27560).
+mv_step st ns btp m fb scr dt =
+  let _ = mv_apply_ghosts st btp m
+  let cr = dt / (2.0 * mp_dr)
+  let cz = dt / (2.0 * mp_dz)
+  let _ = mv_lxf_loop st ns m cr cz fb 0
+  let _ = mv_geom_loop st ns m dt 0
+  let _ = mv_parr_loop st scr 0
+  let _ = mv_efield_loop st scr 0 0
+  mv_induct_loop ns m scr dt 0
+
+scr_ez = 13780
+scr_parr = 27560
+
+-- ── init ──
+mv_init_cell st jtot ji =
+  let j = ji / mp_nz
+  let i = ji % mp_nz
+  let r = mp_r_of j
+  let ra = if r < 0.0005 then 0.0005 else r
+  let g = 1.0 - mp_z_of i / 0.13
+  -- enclosed-current-consistent ramp: I -> 0 at the axis, ~J outside r_c
+  let ifrac = ra * ra / (ra * ra + pbt_r_c * pbt_r_c)
+  let bt = mu0_2pi * jtot * g * ifrac / ra
+  let me = 0.5 * bt * bt * inv_mu0
+  let _ = mp_put st mp_f_rho j i amb_rho
+  let _ = mp_put st mp_f_mr j i 0.0
+  let _ = mp_put st mp_f_mz j i 0.0
+  let _ = mp_put st mp_f_en j i (amb_p / gamma_m1 + me)
+  mp_put st mp_f_bt j i bt
+
+mv_init_loop st jtot ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = mv_init_cell st jtot ji
+    mv_init_loop st jtot (ji + 1)
+
+mv_init jtot =
+  let st = float_arr_new mp_state 0.0
+  let _ = mv_init_loop st jtot 0
+  st
+
+-- copy the bt block into a standalone array for stress_diag
+mv_bt_slice st bt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = float_arr_set bt ji (float_arr_get st (4 * mp_nrnz + ji))
+    mv_bt_slice st bt (ji + 1)
+
+mv_extract_bt st =
+  let bt = float_arr_new mp_nrnz 0.0
+  let _ = mv_bt_slice st bt 0
+  bt
