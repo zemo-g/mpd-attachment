@@ -54,6 +54,8 @@ outflow_sums st j accm acct =
     outflow_sums st (j + 1) accm acct
 
 -- main integration loop; aux: [0]=dt, [1]=t, [2]=steps-since-dt-recompute
+-- aux: [0]=dt, [1]=t, [2]=dt-recompute counter. The floor mass
+-- accumulator lives in scr slot scr_fmass (41340).
 run_loop st ns aux btp m fb scr n =
   if n <= 0 then st
   else if float_arr_get aux 0 < 1.0e-14 then
@@ -151,7 +153,7 @@ main =
   let st0 = mv_init jt
   let ns0 = mv_init jt
   let fb = float_arr_new 20 0.0
-  let scr = float_arr_new 41340 0.0
+  let scr = float_arr_new 41341 0.0
   let aux = float_arr_new 3 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0
@@ -191,6 +193,13 @@ main =
   let t_ex = float_arr_get acct 0
   let _ = print (cat ["  mdot_out=", show_float mdot_out, " kg/s (in 0.006)   T_exhaust=",
                       show_float t_ex, " N"])
+  let t_end = float_arr_get aux 1
+  let fmass = float_arr_get scr scr_fmass
+  let _ = print (cat ["  floor mass budget: ", show_float fmass, " kg over ",
+                      show_float t_end, " s = ", show_float (fmass / t_end),
+                      " kg/s equivalent"])
+  let _ = mv_save_state "out/phase2_ckpt.f32" stf
+  let _ = print "  checkpoint: out/phase2_ckpt.f32"
 
   -- check 2: backplate profile + tip pressure
   let rows = reverse (bp_rows stf mp_j_fluid0 [])

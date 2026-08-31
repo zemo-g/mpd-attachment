@@ -1,0 +1,74 @@
+-- rail/phase2_hall_smoke.rail -- Hall-term smoke test.
+-- Loads the converged resistive checkpoint (out/phase2_ckpt.f32, produced
+-- by phase2_run) and advances 500 steps with the Hall + grad-pe terms ON.
+-- At the whistler-limited dt (~3e-13 s at the vacuum Hall density floor)
+-- this advances well under a nanosecond of arc time: it is a STABILITY
+-- AND CODE-PATH smoke test only, not physics. A converged Hall run needs
+-- the semi-implicit treatment (see NEXT_SESSION.md) or a Studio batch.
+--
+-- Prints the identity before/after and PASS/FAIL on boundedness.
+
+import "rail/pbt.rail"
+import "rail/semi_lib.rail"
+import "rail/mhd_pbt.rail"
+import "rail/stress_diag.rail"
+import "rail/mpd_solver.rail"
+
+run_hall = 1.0
+run_jtot = 8000.0
+run_nsteps = 500
+
+hs_loop st ns aux btp m fb scr n =
+  if n <= 0 then st
+  else
+    let k = float_arr_get aux 2
+    let _ = if k > 3.0 then
+        let dtn = 1.0 * mv_dt st m
+        let _ = float_arr_set aux 0 dtn
+        float_arr_set aux 2 0.0
+      else float_arr_set aux 2 (k + 1.0)
+    let dt = float_arr_get aux 0
+    let _ = mv_step st ns btp m fb scr dt
+    let _ = float_arr_set aux 1 (float_arr_get aux 1 + dt)
+    hs_loop ns st aux btp m fb scr (n - 1)
+
+identity_of st btp m =
+  let _ = mv_apply_ghosts st btp m
+  let bt = mv_extract_bt st
+  let tv = 1.0 * sd_volume_integral bt m
+  let sg = sd_surface_integral bt m
+  let ts = float_arr_get sg 0 + float_arr_get sg 1 + float_arr_get sg 2 + float_arr_get sg 3 + float_arr_get sg 4
+  tv / ts - 1.0
+
+main =
+  let jt = 0.0 + run_jtot
+  let m = mp_build_mask
+  let btp = mp_build_btp jt
+  let st0 = float_arr_new mp_state 0.0
+  let _ = mv_load_state "out/phase2_ckpt.f32" st0
+  let ns0 = float_arr_new mp_state 0.0
+  let fb = float_arr_new 20 0.0
+  let scr = float_arr_new 41341 0.0
+  let aux = float_arr_new 3 0.0
+  let id0 = 1.0 * identity_of st0 btp m
+  let dt0 = 1.0 * mv_dt st0 m
+  let _ = float_arr_set aux 0 dt0
+  let _ = print (cat ["hall smoke: resuming checkpoint, identity=", show_float id0,
+                      ", hall dt=", show_float dt0])
+  let stf = hs_loop st0 ns0 aux btp m fb scr run_nsteps
+  let id1 = 1.0 * identity_of stf btp m
+  let vmax = 1.0 * hs_vmax stf m
+  let _ = print (cat ["  after ", show run_nsteps, " hall steps (t+=",
+                      show_float (float_arr_get aux 1), " s): identity=",
+                      show_float id1, "  vmax=", show_float vmax])
+  let ok1 = if fabs id1 < 0.05 then vmax < 400000.0 else false
+  if ok1 then
+    let _ = print "HALL SMOKE PASS (bounded, identity held)"
+    0
+  else
+    let _ = print "HALL SMOKE FAIL"
+    1
+
+hs_vmax st m =
+  let acc = float_arr_new 1 1.0
+  mv_vmax_loop st m 0 acc
