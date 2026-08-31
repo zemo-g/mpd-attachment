@@ -51,12 +51,34 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   streamlines, mirrored section), `out/img/phase2_8ka_fields.png`;
   renderer `tools/render_fields.py`. Pathological curl-eta state kept as
   `*patho*` for the before/after record.
-  **Open for the next solver session:** energy-consistent explicit
-  resistivity (curl form is checkerboard-transparent and slowly diverges;
-  compact diffusion detonates at Dirichlet corners via quadratic ghost
-  feedback - both isolated by A/B, see commit 8864ef3), Hall-on run
-  (whistler dt ~100x), state checkpointing for run continuation, mass
-  budget accounting for the vacuum floor.
+- **Phase 2 - REAL RESISTIVITY, implicit (2026-08-31 evening).** The
+  numerical-resistivity regime proved metastable (its only damping, LxF
+  diffusion ~0.5 v dx, fades as the flow converges; a tracking re-run
+  detonated at t ~ 0.7 ms), and every explicit Spitzer-eta form detonates
+  at dr = 0.5 mm (sub-cell resistive layer vs pinned Dirichlet faces;
+  A/B-isolated, commit 8864ef3). Fix: **operator-split implicit diffusion**
+  in `rail/mpd_solver.rail` - backward-Euler Thomas tridiagonal solve per
+  z-line then per r-line, prescribed faces folded into the matrix (no
+  ghost feedback), axis face regularized g = 2B/r, magnetic-energy pairing
+  + explicit Ohmic heating dt eta j^2. eta = Spitzer capped [1e-7, 2e-5],
+  physical band; the resistive dt limit is gone (unconditional stability).
+  20k-step run at 8 kA argon 6 g/s (out/phase2_run_implicit.log):
+  - **stress identity -5.8e-5** (15x better than first light)
+  - **cathode-tip pressure 2167 Pa vs Cory 2104 (3.0%)**
+  - backplate wall p 886 vs Cory 465 (1.9x, was 14.8x in the no-eta run)
+  - T_exhaust 25.9 N vs ~25 N measured at 8 kA; mdot_out 1.5x inlet
+    (still converging - mass and vmax still trending at 20k steps;
+    `run_resume = 1.0` chains segments from `out/phase2_ckpt.f32`)
+  - vmax decays monotonically through the old detonation window; floor
+    mass budget exactly 0 (healthy regime never touches the floor)
+  - HALL SMOKE PASS on the resistive checkpoint (identity held, bounded)
+  Selftest 25 checks: 22-25 lock the implicit operator (exact
+  preservation of B~r through the axis path and both Dirichlet folds,
+  linear-z; c/r held to boundary order - the ghost fold is linear
+  extrapolation, so curved profiles are O(dr^2) at faces, by design).
+  **Open:** converge to steady state (chain segments; then re-judge the
+  backplate profile vs the phase-1b parabola), Hall via IMEX/subcycling,
+  the J-sweep (phase 2 sign-off), then Phase 3 sheath BCs.
 
 ## Run
 
@@ -99,5 +121,5 @@ Regenerate the digitized points (needs poppler + py311 PIL/numpy):
 - `rail/pbt.rail` - PBT geometry, constants, Table 2 fits, baselines, Rudolph/Cory prescriptions
 - `rail/semi_lib.rail` / `rail/semi_model.rail` - Maxwell-stress decomposition (phase 1b)
 - `rail/phase0_scoreboard.rail` / `rail/phase1_baselines.rail` - runners
-- `rail/selftest.rail` - 21 transcription/data/scoreboard/model/phase2 guards
+- `rail/selftest.rail` - 25 transcription/data/scoreboard/model/phase2 guards
 - `out/` - generated CSVs (rebuilt by the runners)
