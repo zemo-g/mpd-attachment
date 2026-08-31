@@ -22,6 +22,9 @@ run_hall = 0.0
 run_jtot = 8000.0
 run_nsteps = 20000
 print_every = 2000
+-- 1.0 = resume from out/phase2_ckpt.f32 instead of cold init (chain
+-- segments toward steady state; t and step count restart at 0)
+run_resume = 0.0
 
 two_pi = 6.283185307179586
 
@@ -152,6 +155,11 @@ main =
   let btp = mp_build_btp jt
   let st0 = mv_init jt
   let ns0 = mv_init jt
+  let rs = 0.0 + run_resume
+  let _ = if rs > 0.5 then
+      let _ = mv_load_state "out/phase2_ckpt.f32" st0
+      print "  resumed from out/phase2_ckpt.f32"
+    else 0
   let fb = float_arr_new 20 0.0
   let scr = float_arr_new 41861 0.0
   let aux = float_arr_new 3 0.0
