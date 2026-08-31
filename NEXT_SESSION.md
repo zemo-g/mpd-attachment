@@ -1,46 +1,59 @@
-# Next session: converge, Hall IMEX, then the J-sweep
+# Next session: conservative-in-r transport, then converge for real
 
-State as of 2026-08-31 late evening: README Status is current. Phases
-0/1/1b done. **Phase 2 Priority 1 (implicit resistivity) is CLOSED**:
-operator-split backward-Euler Thomas solve per z-line and r-line, faces
-folded into the tridiagonal, physical Spitzer eta [1e-7, 2e-5], Ohmic
-heating on, resistive dt limit removed. Selftest 25/25 (checks 22-25 lock
-the implicit operator). 20k-step 8 kA run: identity -5.8e-5, tip p 3.0%
-of Cory, T_exhaust 25.9 N vs ~25 measured, vmax decays monotonically
-through the old detonation window, floor never fires. Hall smoke PASS on
-the resistive checkpoint. `run_resume = 1.0` chains segments.
+State as of 2026-08-31 night: README Status is current. Phases 0/1/1b
+done. **Implicit resistivity is CLOSED** (Thomas per line, physical
+Spitzer eta, unconditionally stable; identity ~1e-4 through every regime
+visited, floor never fires, Hall smoke PASS). **Inlet metering is CLOSED**
+(flux-metered ghost; audit reads 0.00599999.. on the live state). What
+those two exposed is the new gate:
 
-## Priority 1: ride out the relaxation, then judge everything
+## Priority 1 - THE GATE: interior mass creation (needs a greenlight on approach)
 
-**The inlet was not metering (found by `rail/phase2_massaudit.rail`,
-fixed same night, commit e64c9b4): the naive Dirichlet ghost admitted
-1.34x nominal through the LxF face flux, so every pre-fix number ran at
-~8 g/s, not 6.** The metered-inlet BC set off a big relaxation: the
-domain sheds ~2.7x excess mass through a damped breathing mode (period
-~0.3-0.4 ms; tip p rang 3563..4344 Pa during seg 3; mass still draining
-at its end). Numerics stayed clean throughout (identity ~1e-4, floor 0,
-dt healthy) - it is dynamics, not instability.
+**Evidence.** `rail/phase2_massaudit.rail` decomposes boundary mass flux
+with the scheme's own face-flux form (validated: reproduces the run's
+mdot_out; walls exactly 0; metered inlet exactly 0.006). On seg 4
+(out/phase2_run_implicit_seg4.log, the post-fix relaxation): boundary
+net = +2.0e-3 kg/s while the domain gains ~8.8e-3 kg/s => **the interior
+discretization manufactures ~7e-3 kg/s - more than the physical inlet
+flow**. Cross-check on the milder seg-2 state: boundary -0.96e-3 vs
+observed +0.33e-3 => +1.3e-3 created. Cause: the update is
+non-conservative in r - the LxF quarter-average and the unweighted
+r-fluxes move rho between cells of different radius, so the r-weighted
+volume integral drifts at O(dr/r) per cell (O(1) at the axis, j=1 has
+dr/r = 2), amplified by 1/dt when the state is violent (the LxF
+diffusive velocity is dx/4dt). No steady state computed on this scheme
+is a mass balance; convergence chasing is pointless until this closes.
 
-Chain 40-60k-step segments (sed `run_resume = 1.0`, compile, copy
-binary, run; ~50 ms/step on the Mini) until mass, vmax, ptip, pwall,
-mdot_out (all in the periodic print) settle. Only then:
+**Approach (b) - recommended: area-weight the r-transport.** Keep the
+state unweighted; multiply r-face fluxes by r_face/r_cell and replace
+the quarter-average's r-neighbors with (r_nb/r_cell)-weighted averages;
+mass geometric source then DROPS (it is the continuum residue of exactly
+this weighting); re-derive the m_r hoop source in the weighted form
+(p_t appears with + sign, B^2/mu0 stays), m_z/E sources drop too.
+Localized to mv_flux_r/mv_lxf_field/mv_geom_src; conserves mass/m_z/E to
+machine precision; m_r keeps a true source (fine, momentum has one).
+**Approach (a): full rewrite in r-weighted conserved variables (rU).**
+Same algebra made structural; more invasive, same result. Either way:
+re-validate the stress identity and per-surface splits, add a selftest
+check (uniform-state + solid-body-ish field must conserve total mass to
+1e-12 over N steps - the same-day mechanism for this defect), and
+COLD-START a metered run (do not relax from the polluted seg-4 state).
+An audit run's "net" line must then match the run's dm/dt trend - that
+comparison is the standing gate (if two things must agree, something
+must compare them).
 
-- tip p and wall p vs Cory (pre-fix snapshots hit 3.0% / 1.9x but at the
-  wrong mdot - they are void as validation numbers)
-- backplate profile vs the phase-1b parabola
-  (`tools/compare_bp_profile.py 8000`)
-- T_exhaust vs measured ~25 N at 8 kA
-- `phase2_massaudit` on the settled checkpoint: inlet ~0.006, and the
-  net should match the (near-zero) mass trend
+## Priority 2: converge at true 6 g/s, judge everything at the plateau
 
-If the breathing mode is too weakly damped to settle in a few segments,
-consider starting COLD with the metered inlet (the cold fill may reach
-the true state faster than relaxing from the over-dense one). Note the
-solver is single-threaded and the M4 Mini is the fastest core in the
-fleet - the Studio's role is the parallel J-sweep, not single long
-chains.
+Cold-start post-fix, chain 40-60k segments (~50 ms/step on the Mini)
+until mass/vmax/ptip/pwall/mdot_out (all in the periodic print) settle.
+Then: tip/wall p vs Cory, backplate profile vs the phase-1b parabola
+(`tools/compare_bp_profile.py 8000`), T_exhaust vs ~25 N measured, and
+the mass audit. ALL pre-fix numbers (3.0% tip match included) ran at
+~8 g/s with a mass-creating interior and are void as validation. The
+solver is single-threaded; the M4 Mini is the fastest core in the fleet
+(Studio is for the parallel J-sweep, not single chains).
 
-## Priority 2: Hall, for real (IMEX)
+## Priority 3: Hall, for real (IMEX)
 
 `run_hall = 1.0` still uses explicit curl-form Hall at whistler dt
 (~3e-13 s): hopeless for converged runs. Now that the Thomas machinery
@@ -53,7 +66,7 @@ fluid steps. Start with (b): it reuses the smoke harness gate and needs
 no new linear algebra; measure how far dt_hall can stretch before the
 identity drifts.
 
-## Priority 3: the J-sweep = Phase 2 sign-off
+## Priority 4: the J-sweep = Phase 2 sign-off
 
 8/10/12/14 kA at 6 g/s from converged states (current BCs handle
 J <= J_t2 = 14 kA; above that add the outer-face j_o prescription and

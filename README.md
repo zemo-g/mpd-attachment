@@ -93,10 +93,21 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   draining at seg-3 end) - so **no observable from before the plateau is
   a validation number**. Segments chain via `run_resume` until mass,
   vmax, ptip, pwall, and mdot_out (all in the periodic print) settle.
-  **Open:** ride out the relaxation to the true 6 g/s steady state, then
-  re-judge tip/wall/backplate-profile vs Cory and T vs measured; Hall via
-  subcycling/IMEX; the J-sweep (phase 2 sign-off); then Phase 3 sheath
-  BCs.
+- **Interior mass creation - THE OPEN GATE (diagnosed 2026-08-31 night).**
+  Riding the post-fix relaxation exposed a second, deeper defect: on
+  seg 4 the boundary flux net was +2.0e-3 kg/s while the domain gained
+  ~8.8e-3 kg/s - **the interior scheme manufactures ~7e-3 kg/s** (more
+  than the physical inlet flow; cross-checked at +1.3e-3 on the milder
+  seg-2 state). The LxF quarter-average and unweighted r-fluxes are
+  non-conservative in r: O(dr/r) per cell (O(1) at the axis), amplified
+  by 1/dt in violent states. Numerics stayed clean throughout (identity
+  ~1e-4) - this is bookkeeping, not instability. No steady state on this
+  scheme is a mass balance. Fix candidates and the re-validation plan are
+  in NEXT_SESSION.md Priority 1 (recommended: area-weighted r-transport,
+  which also retires the mass/mz/E geometric sources). ALL validation
+  numbers to date are void (wrong mdot AND fake interior source); the
+  standing wins are the implicit-resistivity machinery, the metered
+  inlet, the audit tool, and the 25-check selftest.
 
 ## Run
 
