@@ -1,0 +1,88 @@
+-- rail/semi_lib.rail -- Semi-empirical Maxwell-stress model library.
+-- IEPC-97-121 eqs 13-16, 22-24 with Rudolph attachment + Cory pressures.
+-- Dependency: callers must import "rail/pbt.rail" FIRST (Rail does not
+-- dedupe imports, so this file deliberately imports nothing).
+-- See rail/semi_model.rail header for the eq-23 ln-variant note.
+
+out_path = "out/semi_decomposition.csv"
+
+ln2 = log 2.0
+
+-- C_T normalization: contribution / ((mu0/4pi) J^2)
+ctn t j = t / (mu0_4pi * j * j)
+
+-- eq 13 (with the J^2 the paper's print dropped)
+tb_bp j = mu0_4pi * log (pbt_r_ch / pbt_r_c) * j * j
+
+-- eq 14
+tb_aif j =
+  let ji = rudolph_j_i j
+  let rch2 = pbt_r_ch * pbt_r_ch
+  let rch4 = rch2 * rch2
+  let ra2 = pbt_r_a * pbt_r_a
+  let ra4 = ra2 * ra2
+  let t1 = (j * j - 2.0 * pi_f * rch2 * ji * j + pi_f * pi_f * rch4 * ji * ji) * log (pbt_r_ch / pbt_r_a)
+  let t2 = (pi_f * j * ji - pi_f * pi_f * rch2 * ji * ji) * (rch2 - ra2)
+  let t3 = (pi_f * pi_f * ji * ji / 4.0) * (rch4 - ra4)
+  0.0 - mu0_4pi * (t1 + t2 + t3)
+
+-- eq 15
+tb_aof j =
+  let jo = rudolph_j_o j
+  let rao2 = pbt_r_ao * pbt_r_ao
+  let rao4 = rao2 * rao2
+  let ra2 = pbt_r_a * pbt_r_a
+  let ra4 = ra2 * ra2
+  let t1 = pi_f * pi_f * rao4 * jo * jo * log (pbt_r_ao / pbt_r_a)
+  let t2 = pi_f * pi_f * rao2 * jo * jo * (rao2 - ra2)
+  let t3 = (pi_f * pi_f * jo * jo / 4.0) * (rao4 - ra4)
+  mu0_4pi * (t1 - t2 + t3)
+
+-- eq 16
+tb_ct j = mu0_4pi * pbt_phi * pbt_phi * j * j * (1.5 - 2.0 * ln2)
+
+-- eq 24
+tp_ct j =
+  let mag = mu0_4pi * pbt_phi * pbt_phi * j * j / 12.0
+  let gas = cory_p_tip j * pi_f * pbt_r_c * pbt_r_c
+  mag + gas
+
+-- eq 23; ln_arg selects the printed ln(ra/rc) vs derived ln(ra/rch)
+tp_aif j ln_arg =
+  let ji = rudolph_j_i j
+  let rch2 = pbt_r_ch * pbt_r_ch
+  let rch4 = rch2 * rch2
+  let ra2 = pbt_r_a * pbt_r_a
+  let jipi = ji * pi_f
+  let t1a = jipi * jipi * rch4 + jipi * jipi * rch2 * ra2 - 2.0 * j * jipi * rch2
+  let t1 = t1a * (rch2 - ra2) / (2.0 * rch2)
+  let t2 = (2.0 * ra2 * jipi * jipi * rch2 - 2.0 * j * jipi * ra2) * ln_arg
+  mu0_4pi * (t1 - t2) - pi_f * (rch2 - ra2) * cory_p_rch j
+
+-- eq 22 via the parabolic-profile identity:
+-- T_p_BP = pi (rch^2 - rc^2) (p_rc + p_rch) / 2
+tp_bp p_rc p_rch =
+  pi_f * (pbt_r_ch * pbt_r_ch - pbt_r_c * pbt_r_c) * (p_rc + p_rch) / 2.0
+
+-- eq 22 direct a,b evaluation (selftest cross-checks the identity)
+tp_bp_direct p_rc p_rch =
+  let rch2 = pbt_r_ch * pbt_r_ch
+  let rch4 = rch2 * rch2
+  let rc2 = pbt_r_c * pbt_r_c
+  let rc4 = rc2 * rc2
+  let av = (p_rc - p_rch) / (rch2 - rc2)
+  let bv = p_rc + av * rc2
+  bv * pi_f * (rch2 - rc2) - (av * pi_f / 2.0) * (rch4 - rc4)
+
+-- sum of everything except backplate pinching
+t_rest j ln_arg =
+  tb_bp j + tb_aif j + tb_aof j + tb_ct j + tp_ct j + tp_aif j ln_arg
+
+-- infer p(r_c, z0) from a measured thrust
+infer_p_rc t_meas j ln_arg =
+  let need = t_meas - t_rest j ln_arg
+  2.0 * need / (pi_f * (pbt_r_ch * pbt_r_ch - pbt_r_c * pbt_r_c)) - cory_p_rch j
+
+ln_c = log (pbt_r_a / pbt_r_c)
+ln_ch = log (pbt_r_a / pbt_r_ch)
+

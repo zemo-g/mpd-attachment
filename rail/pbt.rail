@@ -101,5 +101,24 @@ ser_name i =
 sigma_fit ct = 0.05 * ct
 sigma_dig ct = sqrt (0.0064 + 0.0009 * ct * ct)
 
+-- ── Measured attachment and pressures (argon, 6 g/s ONLY) ──
+-- Rudolph 1981 attachment prescription (program.md / IEPC-97-121 eq 26)
+pbt_j_t1 = 3700.0
+pbt_j_t2 = 14000.0
+pbt_phi = 0.2
+
+pi_f = 3.141592653589793
+
+-- anode inner face: upstream annulus r_a..r_ch; outer face: r_a..r_ao
+s_inner = pi_f * (pbt_r_ch * pbt_r_ch - pbt_r_a * pbt_r_a)
+s_outer = pi_f * (pbt_r_ao * pbt_r_ao - pbt_r_a * pbt_r_a)
+
+rudolph_j_i j = (if j < pbt_j_t1 then j else pbt_j_t1) / s_inner
+rudolph_j_o j = (if j > pbt_j_t2 then j - pbt_j_t2 else 0.0) / s_outer
+
+-- Cory 1971 pressure fits (N/m^2), argon 6 g/s
+cory_p_rch j = 0.00065 * j * sqrt j
+cory_p_tip j = 0.263 * j
+
 -- list helper (no lambdas in filter/map: named recursion only)
 nth n xs = if n == 0 then head xs else nth (n - 1) (tail xs)

@@ -10,6 +10,7 @@
 --   scoreboard output sanity
 
 import "rail/pbt.rail"
+import "rail/semi_lib.rail"
 
 near v target tol = fabs (v - target) < tol
 
@@ -76,9 +77,40 @@ main =
   let nb = scan_rows slines 0 0
   let f11 = check "scoreboard >= 240 rows" (nth 0 nb >= 240) f10
   let f12 = check "scoreboard C_T in (1.5, 8), sigma > 0" (nth 1 nb == 0) f11
-  if f12 == 0 then
-    let _ = print "SELFTEST PASS (12 checks)"
+  -- semi-empirical model guards
+  -- eq 22 parabolic-profile identity: mean-pressure form == direct a,b form
+  let bp1 = tp_bp 1500.0 700.0
+  let bp2 = tp_bp_direct 1500.0 700.0
+  let f13 = check "tp_bp identity (mean-pressure == a,b form)"
+              (fabs (bp1 - bp2) < 0.0000001) f12
+  -- backplate blowing in C_T units is exactly ln(r_ch/r_c)
+  let v16k = tb_bp 16000.0
+  let f14 = check "BP blowing C_T = ln(rch/rc)"
+              (near (v16k / (mu0_4pi * 256000000.0)) 1.90759 0.0001) f13
+  -- eq 23 ln variant lock: with ln(ra/rch), inferred p_rc tracks Cory's
+  -- p_rch in the 12-16 kA band (the printed ln(ra/rc) goes NEGATIVE there)
+  let t12 = fit_t_ar6 12000.0
+  let t16 = fit_t_ar6 16000.0
+  let p12 = infer_p_rc t12 12000.0 ln_ch
+  let p16 = infer_p_rc t16 16000.0 ln_ch
+  let c12 = cory_p_rch 12000.0
+  let c16 = cory_p_rch 16000.0
+  -- 1.0 * forces float typing of the user-fn results (marker quirk)
+  let r12 = 1.0 * p12 / c12
+  let r16 = 1.0 * p16 / c16
+  let ok12 = if r12 > 0.7 then r12 < 1.3 else false
+  let ok16 = if r16 > 0.7 then r16 < 1.3 else false
+  let f15 = check "p_rc(lnch) tracks Cory at 12 kA" ok12 f14
+  let f16 = check "p_rc(lnch) tracks Cory at 16 kA" ok16 f15
+  -- flat backplate profile cannot reproduce the low-current rise:
+  -- at 7195 A (fig1 point, measured C_T 4.18) flat lands below 3.0
+  let rest7 = t_rest 7195.0 ln_ch
+  let flat7 = tp_bp (cory_p_rch 7195.0) (cory_p_rch 7195.0)
+  let ctf7 = (rest7 + flat7) / (mu0_4pi * 7195.0 * 7195.0)
+  let f17 = check "flat profile misses low-current rise" (ctf7 < 3.0) f16
+  if f17 == 0 then
+    let _ = print "SELFTEST PASS (17 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f12, " of 12)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f17, " of 17)"])
     1

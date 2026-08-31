@@ -19,7 +19,26 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   0.09-0.26 on the database range, **1.19 on low-current fig-1 argon 3 g/s**
   (max residual 4.9 at xi = 0.26, over-predicting the rise). That low-xi
   window is where a solver has room to be interesting.
-- Phase 2 (solver, attachment prescribed): not started.
+- **Phase 1b - semi-empirical Maxwell-stress model: DONE.**
+  `rail/semi_lib.rail` implements eqs 13-16, 22-24 with Rudolph attachment
+  + Cory pressures (argon 6 g/s). Reproduces the paper's fig 6 per-surface
+  decomposition (BP blowing 1.908 constant; all other terms < 0.45 in C_T)
+  and back-infers the fig 4 p(r_c, z0) curve from measured thrust:
+  ~1600 N/m^2 at 7-8 kA falling to ~800 near 12 kA, then tracking Cory's
+  p(r_ch) as the paper says it must above 14 kA. The flat-profile variant
+  (Rudolph's assumption) gives C_T 2.74 where measurement says 4.18 at
+  7.2 kA - the doc's "cannot reproduce the low-current rise", quantified.
+  These surface integrals are the harness Phase 2's per-surface split
+  check compares against; the inferred p(r_c, z0) curve is the published
+  target Phase 3 must hit without being told.
+- Phase 2 (solver, attachment prescribed): not started. Recon: Rail stdlib
+  already has an axisym (r,z) core evolving B_theta (`stdlib/mhd_axisym.rail`)
+  plus an MPD source pack (`stdlib/mhd_mpd.rail`: 1/r geometry, hoop stress,
+  self-field JxB, Spitzer Ohmic). Missing for Phase 2: the Hall term,
+  electrode-attachment boundary conditions (feed Rudolph's j_i/j_lip/j_o in
+  as B_theta boundary values via Ampere), PBT geometry masking (backplate /
+  anode annulus / cathode as internal boundaries), and the Maxwell-stress
+  identity diagnostic.
 
 ## Run
 
@@ -47,13 +66,19 @@ Regenerate the digitized points (needs poppler + py311 PIL/numpy):
    fig-1 points, not the J^(-3..-4) the doc (and the paper's text) quote.
    The steep exponent may only hold below the lowest digitized point, or
    the claim is about the model's asymptote, not data. Standing finding.
+4. **Two typos in IEPC-97-121 itself**: eq 13 drops the J^2 factor (the
+   program doc has it right), and eq 23's final log is printed ln(ra/rc)
+   where the face integral derives ln(ra/rch) - the printed form drives
+   the inferred p(r_c, z0) negative above 14 kA, contradicting the paper's
+   own fig 4; the derived form reproduces it. Selftest locks the variant.
 
 ## Layout
 
 - `program.md` - the program doc (verbatim copy of the Desktop original)
 - `refs/` - source PDFs (IEPC-97-121, JPP-2001 database paper)
 - `data/` - digitized points + provenance notes (`data/README.md`)
-- `rail/pbt.rail` - PBT geometry, constants, Table 2 fits, baselines
+- `rail/pbt.rail` - PBT geometry, constants, Table 2 fits, baselines, Rudolph/Cory prescriptions
+- `rail/semi_lib.rail` / `rail/semi_model.rail` - Maxwell-stress decomposition (phase 1b)
 - `rail/phase0_scoreboard.rail` / `rail/phase1_baselines.rail` - runners
-- `rail/selftest.rail` - 12 transcription/data/scoreboard guards
+- `rail/selftest.rail` - 17 transcription/data/scoreboard/model guards
 - `out/` - generated CSVs (rebuilt by the runners)

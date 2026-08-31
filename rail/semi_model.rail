@@ -1,0 +1,96 @@
+-- rail/semi_model.rail -- runner for the semi-empirical decomposition (phase 1b).
+-- Per measured argon 6 g/s point: evaluates every blowing/pinching term,
+-- back-infers p(r_c, z0) (the model's single free parameter) from measured
+-- thrust -- reproducing the paper's fig 4 curve -- and evaluates the
+-- flat-profile variant (p(r_c) = p(r_ch)) to show it cannot reproduce the
+-- low-current C_T rise.
+--
+-- Eq 23 ambiguity: the printed term ends in ln(ra/rc); a direct derivation
+-- of the face integral suggests ln(ra/rch). Both variants are computed; the
+-- >= 14 kA regime (paper: p(r_c) equals Cory's p(r_ch) there) arbitrates:
+-- the printed variant drives p_rc NEGATIVE above 14 kA, the derived one
+-- tracks Cory. Columns p_rc_lnc / p_rc_lnch.
+--
+-- Run from repo root AFTER phase0: rail_native run rail/semi_model.rail
+
+import "rail/pbt.rail"
+import "rail/semi_lib.rail"
+
+process lines rows =
+  if lines == [] then rows
+  else
+    let line = head lines
+    let rest = tail lines
+    if line == "" then process rest rows
+    else
+      let f = split "," line
+      let src = nth 0 f
+      let prop = nth 1 f
+      let mdot = parse_float (nth 2 f)
+      let keep = if prop == "argon" then mdot > 4.0 else false
+      if keep then
+        let j = parse_float (nth 3 f)
+        let ct = parse_float (nth 4 f)
+        let t_meas = ct * mu0_4pi * j * j
+        let prc_c = infer_p_rc t_meas j ln_c
+        let prc_ch = infer_p_rc t_meas j ln_ch
+        let prch = cory_p_rch j
+        -- NOTE: every user-fn float result goes through a let before use in
+        -- show_float/arithmetic -- direct nesting loses the float marker
+        let norm = mu0_4pi * j * j
+        let v_bp = tb_bp j
+        let v_aif = tb_aif j
+        let v_aof = tb_aof j
+        let v_ctb = tb_ct j
+        let v_ctp = tp_ct j
+        let v_paifc = tp_aif j ln_c
+        let v_paifch = tp_aif j ln_ch
+        let v_restc = t_rest j ln_c
+        let v_restch = t_rest j ln_ch
+        let v_flatbp = tp_bp prch prch
+        let ct_flat_c = (v_restc + v_flatbp) / norm
+        let ct_flat_ch = (v_restch + v_flatbp) / norm
+        let c_bp = v_bp / norm
+        let c_aif = v_aif / norm
+        let c_aof = v_aof / norm
+        let c_ctb = v_ctb / norm
+        let c_ctp = v_ctp / norm
+        let c_paifc = v_paifc / norm
+        let c_paifch = v_paifch / norm
+        let row = cat [src, ",", show_float j, ",", show_float ct, ",",
+                       show_float c_bp, ",",
+                       show_float c_aif, ",",
+                       show_float c_aof, ",",
+                       show_float c_ctb, ",",
+                       show_float c_ctp, ",",
+                       show_float c_paifc, ",",
+                       show_float c_paifch, ",",
+                       show_float prch, ",",
+                       show_float prc_c, ",", show_float prc_ch, ",",
+                       show_float ct_flat_c, ",", show_float ct_flat_ch]
+        process rest (cons row rows)
+      else process rest rows
+
+main =
+  let raw = read_file "out/measured_ct.csv"
+  let lines = tail (split "\n" raw)
+  let rows = reverse (process lines [])
+  let hdr = "source,J_A,ct_meas,ct_bp_b,ct_aif_b,ct_aof_b,ct_ctip_b,ct_ctip_p,ct_aif_p_lnc,ct_aif_p_lnch,p_rch_cory,p_rc_lnc,p_rc_lnch,ct_flat_lnc,ct_flat_lnch\n"
+  let _ = write_file out_path (cat [hdr, join "\n" rows, "\n"])
+  let _ = print "semi-empirical decomposition (argon 6 g/s)"
+  let _ = print (cat ["  BP blowing C_T (J-independent): ", show_float (log (pbt_r_ch / pbt_r_c))])
+  let _ = print "  anchors (J, inferred p_rc lnc / lnch vs Cory p_rch; Ar6 fit range only):"
+  let _ = anchor 12000.0
+  let _ = anchor 16000.0
+  let _ = anchor 20000.0
+  let _ = anchor 24000.0
+  let _ = print (cat ["  wrote ", out_path])
+  0
+
+-- anchor rows use the Ar6 database fit as measured thrust
+anchor j =
+  let t_meas = fit_t_ar6 j
+  let prc_c = infer_p_rc t_meas j ln_c
+  let prc_ch = infer_p_rc t_meas j ln_ch
+  print (cat ["    J=", show (to_int j), "  p_rc: ", show_float prc_c, " / ",
+              show_float prc_ch, "   p_rch: ", show_float (cory_p_rch j)])
