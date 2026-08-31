@@ -43,7 +43,10 @@ n_hall_floor = 1.0e19
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
-in_vg_cap = 600.0
+-- ghost-velocity cap: 2000 m/s clears nominal metering by 6.7x at
+-- operating density while staying 150x under the ~3e5 m/s that
+-- detonated the uncapped ghost on near-vacuum fluid
+in_vg_cap = 2000.0
 in_rho_ann = 0.014707
 in_rho_ring = 0.0064220
 kT_m = 62444.0
@@ -715,6 +718,16 @@ scr_ez = 13780
 scr_parr = 27560
 
 -- ── init ──
+-- GAS PREFILL at 300 K (2026-08-31 night): a cold start from amb_rho
+-- (3e-5) with the full 8 kA field is a death spiral - the field pumps
+-- the chamber out faster than the choked inlet can feed it, rho falls,
+-- v_A rises, dt collapses (out/phase2_cold1.log: mass 8x down, vmax
+-- 110k, dt 1.4e-9 after 60k steps). Real devices flow gas BEFORE the
+-- arc. fill_rho ~ the expected steady mean (mass ~4e-6 kg over ~1.3e-3
+-- m^3); the steady state does not depend on the init, and the prefill
+-- also lowers init v_A ~15x, so dt0 is ~7x bigger.
+fill_rho = 0.002
+
 mv_init_cell st jtot ji =
   let j = ji / mp_nz
   let i = ji % mp_nz
@@ -725,10 +738,10 @@ mv_init_cell st jtot ji =
   let ifrac = ra * ra / (ra * ra + pbt_r_c * pbt_r_c)
   let bt = mu0_2pi * jtot * g * ifrac / ra
   let me = 0.5 * bt * bt * inv_mu0
-  let _ = mp_put st mp_f_rho j i amb_rho
+  let _ = mp_put st mp_f_rho j i fill_rho
   let _ = mp_put st mp_f_mr j i 0.0
   let _ = mp_put st mp_f_mz j i 0.0
-  let _ = mp_put st mp_f_en j i (amb_p / gamma_m1 + me)
+  let _ = mp_put st mp_f_en j i (fill_rho * kT_m / gamma_m1 + me)
   mp_put st mp_f_bt j i bt
 
 mv_init_loop st jtot ji =
