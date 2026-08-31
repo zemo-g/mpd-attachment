@@ -99,5 +99,5 @@ Regenerate the digitized points (needs poppler + py311 PIL/numpy):
 - `rail/pbt.rail` - PBT geometry, constants, Table 2 fits, baselines, Rudolph/Cory prescriptions
 - `rail/semi_lib.rail` / `rail/semi_model.rail` - Maxwell-stress decomposition (phase 1b)
 - `rail/phase0_scoreboard.rail` / `rail/phase1_baselines.rail` - runners
-- `rail/selftest.rail` - 17 transcription/data/scoreboard/model guards
+- `rail/selftest.rail` - 21 transcription/data/scoreboard/model/phase2 guards
 - `out/` - generated CSVs (rebuilt by the runners)
