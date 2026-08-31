@@ -42,23 +42,29 @@ rate (mv_bmass_rate); measured residual 1.6e-22 on dm 4.2e-13.
 ghost paired reflected momentum with the copied near-vacuum density
 (ghost vz ~ 3e5 m/s, invisible to mv_dt's fluid-only CFL scan) and blew
 the inlet row within steps. Ghost vz is now capped at in_vg_cap = 600
-m/s: the choked valve-opening transient; the cap disengages in the
-operating regime, where metering stays exact. Consequence: a cold start
-fills the chamber SLOWLY (the controller cannot force 6 g/s into
-vacuum) - expect O(100k) steps to quasi-steady.
+m/s (later 2000): the choked valve-opening transient; the cap
+disengages in the operating regime, where metering stays exact.
+**Follow-up finding: a cold start from near-vacuum does not fill AT
+ALL** - the full 8 kA field is a magnetic pump, the chamber empties
+faster than the choked valve feeds it, v_A rises, dt collapses
+(out/phase2_cold1.log: mass 8x DOWN, vmax 110k, dt 1.4e-9 at 60k
+steps). Real devices flow gas before striking the arc. Fix (d7e4825):
+mv_init prefills 300 K argon at fill_rho = 2e-3 (the expected steady
+mean; the steady state does not depend on the init), which also drops
+init v_A ~15x so dt0 is ~7x bigger; cap raised to 2000 m/s.
 
 ## Priority 1: converge at true 6 g/s, judge everything at the plateau
 
-out/phase2_cold1.log is the first cold conservative segment (60k). Chain
-via run_resume (~50 ms/step on the Mini) until
+out/phase2_cold2.log is the first PREFILLED conservative segment (60k;
+cold1 was the death-spiral record). Chain via run_resume (~50 ms/step
+on the Mini) until
 mass/vmax/ptip/pwall/mdot_out (all in the periodic print) settle. Then:
 tip/wall p vs Cory, backplate profile vs the phase-1b parabola
 (`tools/compare_bp_profile.py 8000`), T_exhaust vs ~25 N measured, and
 `phase2_massaudit` (its net must match the run's dm/dt trend - that
 comparison is the standing gate). ALL pre-conservative numbers (3.0% tip
 match included) ran at ~8 g/s with a mass-creating interior and are void
-as validation. If the fill is too slow, a denser init (amb_rho up) is
-legitimate - the steady state does not depend on the init. The solver is
+as validation. The solver is
 single-threaded; the M4 Mini is the fastest core in the fleet (Studio is
 for the parallel J-sweep, not single chains).
 
