@@ -40,7 +40,11 @@ gamma_m1 = 0.6666666666666667
 e_charge = 1.602176634e-19
 m_ion_ar = 6.633e-26
 cfl_c = 0.30
-eta_cap = 2.0e-5
+-- eta bounds are NUMERIC only since the partially-ionized law
+-- (2026-09-01): the old 2e-5 "physical band" cap bound in 100% of cells
+-- at the cold Saha steady state and throttled Ohmic input to 7 kW
+-- against a ~400 kW arc, erasing arc-constriction physics entirely
+eta_cap = 1.0e-3
 eta_floor = 1.0e-7
 n_hall_floor = 1.0e19
 
@@ -400,14 +404,31 @@ mv_jz st j i =
 -- after ghosts is exact for the whole hyperbolic phase: mv_step now
 -- fills per-cell caches (scr_eta, scr_parr) once each and everything
 -- else reads them. 2 inversions/cell/step instead of ~12.
+-- PARTIALLY-IONIZED resistivity (greenlit 2026-09-01): electron-ion
+-- (Spitzer) + electron-neutral, in series on the same electrons so the
+-- resistivities ADD. Uses the Saha alpha the EOS already provides.
+--   eta_en = m_e nu_en / (n_e e^2),  nu_en = n_n sigma_en v_te,
+--   v_te = sqrt(8 k T / pi m_e),  sigma_en = 1e-19 m^2 (argon,
+--   Ramsauer-averaged first cut)
+--   => eta_en = 2.2046e-8 sqrt(T) (1 - alpha) / alpha   [Ohm m]
+-- Cold neutral argon is nearly an insulator (alpha floored at 1e-8 ->
+-- the cap catches it): current flows only where gas is ionized, so arc
+-- constriction - the attachment mechanism itself - emerges instead of
+-- being erased by a uniform capped eta. eta_en == Spitzer near
+-- alpha ~ 5-10% at 1 eV; above that Spitzer dominates as before.
 mv_eta_calc st j i =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
   let ei = 1.0 * mv_eint st j i
-  let t = 1.0 * eos_temp (rho_safe / m_ion_ar) ei
+  let n = rho_safe / m_ion_ar
+  let t = 1.0 * eos_temp n ei
+  let a_raw = 1.0 * eos_alpha n t
+  let a = if a_raw < 0.00000001 then 0.00000001 else a_raw
   let t_eV = t / 11604.518
   let t_c = if t_eV < 0.1 then 0.1 else t_eV
-  let eta = 5.0e-5 / (t_c * sqrt t_c)
+  let e_ei = 5.0e-5 / (t_c * sqrt t_c)
+  let e_en = 2.2046e-8 * sqrt t * (1.0 - a) / a
+  let eta = e_ei + e_en
   if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta
 
 mv_eta_cache scr j i = float_arr_get scr (scr_eta + j * mp_nz + i)

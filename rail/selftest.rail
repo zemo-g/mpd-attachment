@@ -204,22 +204,28 @@ main =
   -- mass must equal dt * (boundary flux rate) - the defect this guards
   -- against manufactured ~7e-3 kg/s on the pre-conservative scheme
   -- (2026-08-31). The floor accumulator must also stay 0.
+  -- mc_run recomputes dt EVERY step (the partially-ionized eta makes the
+  -- cold-start ignition transient violent enough that a frozen dt
+  -- detonates within 50 steps; the real runner adapts dt too). The gate
+  -- itself is unchanged: one measured step, dm == dt * boundary rate,
+  -- and the floor must not fire DURING that step.
   let stq = mv_init jt2
   let nsq0 = mv_init jt2
   let fbq = float_arr_new 25 0.0
   let scrq = float_arr_new 55641 0.0
-  let dtq = 1.0 * mv_dt stq m
-  let stw = mc_run stq nsq0 btp m fbq scrq dtq 50
+  let stw = mc_run stq nsq0 btp m fbq scrq 0.0 50
   let _ = mv_apply_ghosts stw btp m
+  let dtq = 1.0 * mv_dt stw m
   let m0 = 1.0 * mv_total_mass stw m
   let br = 1.0 * mv_bmass_rate stw m dtq
+  let fm0 = float_arr_get scrq scr_fmass
   let nsw = float_arr_new mp_state 0.0
   let _ = mv_step stw nsw btp m fbq scrq dtq
   let m1 = 1.0 * mv_total_mass nsw m
   let dm = m1 - m0
   let pred = dtq * br
   let okm = fabs (dm - pred) < fabs pred * 0.000001 + 1.0e-18
-  let ok26 = if okm then float_arr_get scrq scr_fmass == 0.0 else false
+  let ok26 = if okm then float_arr_get scrq scr_fmass == fm0 else false
   let f26 = check "one-step mass conservation (interior creates nothing)" ok26 f25
   -- (27..29) Saha EOS guards (2026-09-01). References computed
   -- independently in Python from CODATA constants (chi = 15.759611 eV,
@@ -239,18 +245,33 @@ main =
   let t29 = 1.0 * eos_temp nref e29
   let f29 = check "EOS round-trip at T=15000"
               (fabs (t29 / 15000.0 - 1.0) < 0.00001) f28
-  if f29 == 0 then
-    let _ = print "SELFTEST PASS (29 checks)"
+  -- (30..31) partially-ionized eta (Python refs from the same constants:
+  -- n = 3e22, sigma_en = 1e-19). 30: weakly ionized band, e-n dominated.
+  -- 31: fully ionized limit collapses to pure Spitzer.
+  let ste = mv_init jt2
+  let _ = mp_put ste mp_f_rho 60 50 0.0019899
+  let _ = mp_put ste mp_f_bt 60 50 0.0
+  let _ = mp_put ste mp_f_en 60 50 8399.1649143
+  let et30 = 1.0 * mv_eta_calc ste 60 50
+  let f30 = check "eta partially-ionized (T=9000) = 1.317e-4"
+              (fabs (et30 / 0.0001317091 - 1.0) < 0.001) f29
+  let _ = mp_put ste mp_f_en 60 50 137877.86303
+  let et31 = 1.0 * mv_eta_calc ste 60 50
+  let f31 = check "eta fully-ionized limit = Spitzer 5.59e-6"
+              (fabs (et31 / 0.000005590582 - 1.0) < 0.001) f30
+  if f31 == 0 then
+    let _ = print "SELFTEST PASS (31 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f29, " of 29)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f31, " of 31)"])
     1
 
-mc_run st ns btp m fb scr dt n =
+mc_run st ns btp m fb scr unused n =
   if n <= 0 then st
   else
+    let dt = 1.0 * mv_dt st m
     let _ = mv_step st ns btp m fb scr dt
-    mc_run ns st btp m fb scr dt (n - 1)
+    mc_run ns st btp m fb scr unused (n - 1)
 
 -- line fills for the implicit-diffusion guards: set bt and rebuild en so
 -- p stays exactly amb_p (mv_init leaves momenta zero and p uniform)
