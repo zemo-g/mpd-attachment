@@ -89,21 +89,36 @@ eos_e n t =
   let a = 1.0 * eos_alpha n t
   1.5 * (1.0 + a) * n * k_boltz * t + a * n * chi_ar
 
-eos_temp_bi n eint tl th it =
+-- Bisection with every loop invariant hoisted into the args (exactly 8,
+-- the TCO limit): a reference to a TOP-LEVEL float constant compiles to
+-- a runtime atof of its literal (~50ns + a locale lock), measured
+-- 2026-09-01 - four such references per iteration made the first Saha
+-- binary spend a third of its time in strtod. Inline literals and args
+-- are free; only named-constant references pay.
+--   cn = 4 n / saha_c,  ck = chi_over_k,  ek = 1.5 n k,  ic = n chi
+eos_temp_bi cn ck ek ic eint tl th it =
   if it >= 24 then 0.5 * (tl + th)
   else
     let tm = 0.5 * (tl + th)
-    let em = 1.0 * eos_e n tm
-    if em < eint then eos_temp_bi n eint tm th (it + 1)
-    else eos_temp_bi n eint tl tm (it + 1)
+    let a = if tm < 2500.0 then 0.0 else
+        let s = tm * sqrt tm * exp (0.0 - ck / tm)
+        2.0 / (1.0 + sqrt (1.0 + cn / s))
+    let em = ek * tm * (1.0 + a) + ic * a
+    if em < eint then eos_temp_bi cn ck ek ic eint tm th (it + 1)
+    else eos_temp_bi cn ck ek ic eint tl tm (it + 1)
 
 eos_temp n eint =
-  let th = eint / (1.5 * n * k_boltz)
+  let kb = 1.0 * k_boltz
+  let ek = 1.5 * n * kb
+  let th = eint / ek
   if th < 2500.0 then th
   else
-    let tl_raw = (eint - n * chi_ar) / (3.0 * n * k_boltz)
+    let ic = n * chi_ar
+    let tl_raw = (eint - ic) / (2.0 * ek)
     let tl = if tl_raw < 300.0 then 300.0 else tl_raw
-    eos_temp_bi n eint tl th 0
+    let cn = 4.0 * n / saha_c
+    let ck = 1.0 * chi_over_k
+    eos_temp_bi cn ck ek ic eint tl th 0
 
 -- floored thermal energy density e_int = en - ke - me (floor matches the
 -- old p >= 1e-6 floor: gamma_m1 * 1.5e-6 = 1e-6)
