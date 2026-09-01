@@ -138,10 +138,12 @@ experiment-loop there.
 - The implicit solver's Dirichlet fold is ghost = 2*face - cell (linear
   extrapolation): exact for linear profiles, O(dr^2) for curved ones.
   Selftest 22/25 encode which is which - don't "fix" 22 to be exact.
-- scr is 41861 floats (er 0 / ez 13780 / parr 27560 / fmass 41340 /
-  tridiagonal lanes 41341+) and fb is 25 (4 neighbor flux vectors + the
-  cell's own r-flux at offset 20). Every runner that calls mv_step must
-  allocate those sizes.
+- scr is 55641 floats (er 0 / ez 13780 / parr 27560 / fmass 41340 /
+  tridiagonal lanes 41341..41860 / eta cache 41861+) and fb is 25 (4
+  neighbor flux vectors + the cell's own r-flux at offset 20). Every
+  runner that calls mv_step must allocate those sizes. Anything calling
+  mv_rco/mv_zco/mv_heat_loop DIRECTLY must fill the eta cache first
+  (mv_eta_loop st scr 0) or the operators run with eta = 0.
 
 ## Commands
 

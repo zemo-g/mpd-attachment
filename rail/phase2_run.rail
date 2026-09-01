@@ -155,7 +155,7 @@ main =
       print "  resumed from out/phase2_ckpt.f32"
     else 0
   let fb = float_arr_new 25 0.0
-  let scr = float_arr_new 41861 0.0
+  let scr = float_arr_new 55641 0.0
   let aux = float_arr_new 3 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0

@@ -144,7 +144,12 @@ main =
   -- en to keep p = amb_p exactly)
   let jt2 = 0.0 + 8000.0
   let stx = mv_init jt2
-  let scr2 = float_arr_new 41861 0.0
+  let scr2 = float_arr_new 55641 0.0
+  -- mv_rco/mv_zco read eta from the scr cache since the 2026-09-01
+  -- caching pass: fill it or the operators run with eta = 0 and checks
+  -- 23-25 pass VACUOUSLY (nothing diffuses, profiles trivially held).
+  -- One fill is exact here: the st_line_* fills keep e_int uniform.
+  let _ = mv_eta_loop stx scr2 0
   let dtbig = 1.0
   -- (22) r-solve, coax vacuum field c/r on j = 20..128 at i = 40
   let _ = st_line_rinv stx 40 20
@@ -202,7 +207,7 @@ main =
   let stq = mv_init jt2
   let nsq0 = mv_init jt2
   let fbq = float_arr_new 25 0.0
-  let scrq = float_arr_new 41861 0.0
+  let scrq = float_arr_new 55641 0.0
   let dtq = 1.0 * mv_dt stq m
   let stw = mc_run stq nsq0 btp m fbq scrq dtq 50
   let _ = mv_apply_ghosts stw btp m

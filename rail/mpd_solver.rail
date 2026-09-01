@@ -147,7 +147,7 @@ mv_speed st j i =
 -- ── fluxes ──
 -- fb is a single 20-float scratch: offsets 0 r-plus, 5 r-minus, 10 z-plus,
 -- 15 z-minus (one allocation per run; keeps loop arity <= 8 for TCO)
-mv_flux_r st j i fb off =
+mv_flux_r st scr j i fb off =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
   let mr = mp_get st mp_f_mr j i
@@ -155,7 +155,7 @@ mv_flux_r st j i fb off =
   let bt = mp_get st mp_f_bt j i
   let e = mp_get st mp_f_en j i
   let vr = mr / rho_safe
-  let p = mv_pressure st j i
+  let p = float_arr_get scr (scr_parr + j * mp_nz + i)
   let pt = p + 0.5 * bt * bt * inv_mu0
   let _ = float_arr_set fb off mr
   let _ = float_arr_set fb (off + 1) (mr * vr + pt)
@@ -163,7 +163,7 @@ mv_flux_r st j i fb off =
   let _ = float_arr_set fb (off + 3) ((e + pt) * vr)
   float_arr_set fb (off + 4) (vr * bt)
 
-mv_flux_z st j i fb off =
+mv_flux_z st scr j i fb off =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
   let mr = mp_get st mp_f_mr j i
@@ -171,7 +171,7 @@ mv_flux_z st j i fb off =
   let bt = mp_get st mp_f_bt j i
   let e = mp_get st mp_f_en j i
   let vz = mz / rho_safe
-  let p = mv_pressure st j i
+  let p = float_arr_get scr (scr_parr + j * mp_nz + i)
   let pt = p + 0.5 * bt * bt * inv_mu0
   let _ = float_arr_set fb off mz
   let _ = float_arr_set fb (off + 1) (mr * vz)
@@ -335,34 +335,34 @@ mv_lxf_apply st ns cr cz fb ji =
   mv_lxf_field st ns cr cz fb j i 4
 
 -- theta-theta stress residue of the conservative r-form: m_r only
-mv_geom_src st ns dt j i =
+mv_geom_src st ns scr dt j i =
   let r = mp_r_of j
   let bt = mp_get st mp_f_bt j i
-  let p = mv_pressure st j i
+  let p = float_arr_get scr (scr_parr + j * mp_nz + i)
   let src = (p - 0.5 * bt * bt * inv_mu0) / r
   mp_put ns mp_f_mr j i (mp_get ns mp_f_mr j i + dt * src)
 
-mv_cell st ns cr cz fb ji =
+mv_cell st ns cr cz fb scr ji =
   let j = ji / mp_nz
   let i = ji % mp_nz
-  let _ = mv_flux_r st (j + 1) i fb 0
-  let _ = mv_flux_r st (j - 1) i fb 5
-  let _ = mv_flux_z st j (i + 1) fb 10
-  let _ = mv_flux_z st j (i - 1) fb 15
-  let _ = mv_flux_r st j i fb 20
+  let _ = mv_flux_r st scr (j + 1) i fb 0
+  let _ = mv_flux_r st scr (j - 1) i fb 5
+  let _ = mv_flux_z st scr j (i + 1) fb 10
+  let _ = mv_flux_z st scr j (i - 1) fb 15
+  let _ = mv_flux_r st scr j i fb 20
   mv_lxf_apply st ns cr cz fb ji
 
-mv_lxf_loop st ns m cr cz fb ji =
+mv_lxf_loop st ns m cr cz fb scr ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_cell st ns cr cz fb ji else 0
-    mv_lxf_loop st ns m cr cz fb (ji + 1)
+    let _ = if arr_get m ji == 0 then mv_cell st ns cr cz fb scr ji else 0
+    mv_lxf_loop st ns m cr cz fb scr (ji + 1)
 
-mv_geom_loop st ns m dt ji =
+mv_geom_loop st ns m scr dt ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_geom_src st ns dt (ji / mp_nz) (ji % mp_nz) else 0
-    mv_geom_loop st ns m dt (ji + 1)
+    let _ = if arr_get m ji == 0 then mv_geom_src st ns scr dt (ji / mp_nz) (ji % mp_nz) else 0
+    mv_geom_loop st ns m scr dt (ji + 1)
 
 -- ── non-ideal induction ──
 mv_jr st j i = 0.0 - inv_mu0 * (mp_get st mp_f_bt j (i + 1) - mp_get st mp_f_bt j (i - 1)) / (2.0 * mp_dz)
@@ -376,8 +376,16 @@ mv_jz st j i =
 
 -- Spitzer needs the actual temperature: under the Saha EOS the old ideal
 -- readback p m/(rho k) equals (1+alpha) T, up to 2x hot in ionized gas,
--- so eta comes from the same e_int -> T inversion the pressure uses
-mv_eta st j i =
+-- so eta comes from the same e_int -> T inversion the pressure uses.
+-- COST: the inversion bisects (24 exp evals in hot cells). The step used
+-- to call this ~6x/cell (sweeps + heat) and mv_pressure ~6x/cell more,
+-- which made the first Saha binary ~7x slower than ideal. But e_int is
+-- INVARIANT under field transport (the me-pairing telescopes exactly),
+-- so eta at step start is exact for the whole sweep+heat phase, and p
+-- after ghosts is exact for the whole hyperbolic phase: mv_step now
+-- fills per-cell caches (scr_eta, scr_parr) once each and everything
+-- else reads them. 2 inversions/cell/step instead of ~12.
+mv_eta_calc st j i =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
   let ei = 1.0 * mv_eint st j i
@@ -386,6 +394,14 @@ mv_eta st j i =
   let t_c = if t_eV < 0.1 then 0.1 else t_eV
   let eta = 5.0e-5 / (t_c * sqrt t_c)
   if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta
+
+mv_eta_cache scr j i = float_arr_get scr (scr_eta + j * mp_nz + i)
+
+mv_eta_loop st scr ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = float_arr_set scr (scr_eta + ji) (mv_eta_calc st (ji / mp_nz) (ji % mp_nz))
+    mv_eta_loop st scr (ji + 1)
 
 -- build Er, Ez (into scr), pe = p/2 from the parr slice of scr
 mv_efield_cell st scr j i =
@@ -504,12 +520,12 @@ mv_zco ns scr dt j i0 n p =
   if p >= n then 0
   else
     let i = i0 + p
-    let ec = 1.0 * mv_eta ns j i
+    let ec = 1.0 * mv_eta_cache scr j i
     let em = if p == 0 then ec else
-        let e2 = 1.0 * mv_eta ns j (i - 1)
+        let e2 = 1.0 * mv_eta_cache scr j (i - 1)
         0.5 * (ec + e2)
     let ep = if p == n - 1 then ec else
-        let e3 = 1.0 * mv_eta ns j (i + 1)
+        let e3 = 1.0 * mv_eta_cache scr j (i + 1)
         0.5 * (ec + e3)
     let dm = em * inv_mu0
     let dp = ep * inv_mu0
@@ -530,12 +546,12 @@ mv_rco ns scr dt i j0 n p =
   else
     let j = j0 + p
     let r = mp_r_of j
-    let ec = 1.0 * mv_eta ns j i
+    let ec = 1.0 * mv_eta_cache scr j i
     let em = if p == 0 then ec else
-        let e2 = 1.0 * mv_eta ns (j - 1) i
+        let e2 = 1.0 * mv_eta_cache scr (j - 1) i
         0.5 * (ec + e2)
     let ep = if p == n - 1 then ec else
-        let e3 = 1.0 * mv_eta ns (j + 1) i
+        let e3 = 1.0 * mv_eta_cache scr (j + 1) i
         0.5 * (ec + e3)
     let dm = em * inv_mu0
     let dp = ep * inv_mu0
@@ -651,17 +667,17 @@ mv_rsweep ns btp m scr dt i =
 -- explicit Ohmic heating dt eta j^2 (post-diffusion field; stencils at
 -- boundary-adjacent cells read the previous fill of the ghost cells,
 -- one operator stale, first-order like every source here)
-mv_heat_cell ns dt j i =
-  let et = 1.0 * mv_eta ns j i
+mv_heat_cell ns scr dt j i =
+  let et = 1.0 * mv_eta_cache scr j i
   let jr = 1.0 * mv_jr ns j i
   let jz = 1.0 * mv_jz ns j i
   mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dt * et * (jr * jr + jz * jz))
 
-mv_heat_loop ns m dt ji =
+mv_heat_loop ns m scr dt ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_heat_cell ns dt (ji / mp_nz) (ji % mp_nz) else 0.0
-    mv_heat_loop ns m dt (ji + 1)
+    let _ = if arr_get m ji == 0 then mv_heat_cell ns scr dt (ji / mp_nz) (ji % mp_nz) else 0.0
+    mv_heat_loop ns m scr dt (ji + 1)
 
 -- vacuum guard: state density floor + velocity cap (rescale momenta).
 -- The pinch evacuates the near-cathode region; without this the Alfven
@@ -761,24 +777,28 @@ mv_bmass_rate st m dt =
   float_arr_get acc 0
 
 -- ── one full step ──
--- Order (Lie splitting): implicit resistive sweeps + Ohmic heat in-place
--- on st, then ghosts, then hyperbolic st -> ns (+ explicit Hall), floor.
--- ns and scratch are caller-owned and reused (no per-step allocation; the
--- caller double-buffers st <-> ns). fb: 20-float flux scratch. scr: one
--- 41861-float array carved by offset (er 0, ez +13780, parr +27560,
--- fmass 41340, tridiagonal lanes 41341..41860).
+-- Order (Lie splitting): eta cache from step-start e_int (exact through
+-- the sweeps: field transport preserves e_int), implicit resistive
+-- sweeps + Ohmic heat in-place on st, then ghosts, then the p cache
+-- (exact for the whole hyperbolic phase), hyperbolic st -> ns
+-- (+ explicit Hall), floor. ns and scratch are caller-owned and reused
+-- (no per-step allocation; the caller double-buffers st <-> ns).
+-- fb: 25-float flux scratch. scr: one 55641-float array carved by offset
+-- (er 0, ez +13780, parr +27560, fmass 41340, tridiagonal lanes
+-- 41341..41860, eta +41861).
 mv_step st ns btp m fb scr dt =
+  let _ = mv_eta_loop st scr 0
   let _ = mv_zsweep st btp m scr dt 1
   let _ = mv_rsweep st btp m scr dt 1
-  let _ = mv_heat_loop st m dt 0
+  let _ = mv_heat_loop st m scr dt 0
   let _ = mv_apply_ghosts st btp m
+  let _ = mv_parr_loop st scr 0
   let cr = dt / (2.0 * mp_dr)
   let cz = dt / (2.0 * mp_dz)
-  let _ = mv_lxf_loop st ns m cr cz fb 0
-  let _ = mv_geom_loop st ns m dt 0
+  let _ = mv_lxf_loop st ns m cr cz fb scr 0
+  let _ = mv_geom_loop st ns m scr dt 0
   let rh = 0.0 + run_hall
   let _ = if rh > 0.5 then
-      let _ = mv_parr_loop st scr 0
       let _ = mv_efield_loop st scr 0 0
       mv_induct_loop ns m scr dt 0
     else 0
@@ -786,6 +806,7 @@ mv_step st ns btp m fb scr dt =
 
 scr_ez = 13780
 scr_parr = 27560
+scr_eta = 41861
 
 -- ── init ──
 -- GAS PREFILL at 300 K (2026-08-31 night): a cold start from amb_rho
