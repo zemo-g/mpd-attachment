@@ -18,6 +18,10 @@ import "rail/mhd_pbt.rail"
 import "rail/stress_diag.rail"
 import "rail/mpd_solver.rail"
 
+-- wall clock (libc time(3)) so every progress print carries its own
+-- rate + ETA: a stalled or slowed run is visible from the log alone
+foreign time t
+
 run_hall = 0.0
 run_jtot = 8000.0
 run_nsteps = 20000
@@ -70,10 +74,15 @@ run_loop st ns aux btp m fb scr n =
         let am = float_arr_new 1 0.0
         let at = float_arr_new 1 0.0
         let _ = outflow_sums ns 1 am at
-        print (cat ["  step ", show (run_nsteps - n), "  t=", show_float (float_arr_get aux 1),
+        let sdone = run_nsteps - n
+        let el = time 0 - to_int (float_arr_get aux 3)
+        let msps = if sdone > 0 then el * 1000 / sdone else 0
+        let etam = if sdone > 0 then el * n / sdone / 60 else 0
+        print (cat ["  step ", show sdone, "  t=", show_float (float_arr_get aux 1),
                     "  dt=", show_float dt, "  mass=", show_float mtot,
                     "  vmax=", show_float vmax, "  ptip=", show_float ptip,
-                    "  pwall=", show_float pw, "  mdot_out=", show_float (float_arr_get am 0)])
+                    "  pwall=", show_float pw, "  mdot_out=", show_float (float_arr_get am 0),
+                    "  wall=", show el, "s ", show msps, "ms/step eta ", show etam, "min"])
       else 0
     run_loop ns st aux btp m fb scr (n - 1)
 
@@ -156,10 +165,11 @@ main =
     else 0
   let fb = float_arr_new 25 0.0
   let scr = float_arr_new 55641 0.0
-  let aux = float_arr_new 3 0.0
+  let aux = float_arr_new 4 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0
   let _ = float_arr_set aux 2 0.0
+  let _ = float_arr_set aux 3 (to_float (time 0))
   let _ = print (cat ["phase2 run: J=", show (to_int jt), " A, hall=", show_float run_hall,
                       ", steps=", show run_nsteps, ", dt0=", show_float dt0])
   let stf = run_loop st0 ns0 aux btp m fb scr run_nsteps
