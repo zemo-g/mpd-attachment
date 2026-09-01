@@ -32,6 +32,9 @@
 --   Hall + grad-pe stay explicit (whistler dt) and p-absorbing, as before.
 --   eta = Spitzer 5e-5/T_eV^1.5 capped to [1e-7, 2e-5] (physical band);
 --   Hall density floor n_hall = 1e19 m^-3 (standard vacuum clamp).
+--   EOS: Saha single-ionization argon (the ionization energy sink) - see
+--   the eos_* block. grad-pe still uses pe = p/2 (full-ionization limit);
+--   refine to p alpha/(1+alpha) when Hall goes implicit (P2).
 
 gamma_m1 = 0.6666666666666667
 e_charge = 1.602176634e-19
@@ -55,8 +58,56 @@ rho_floor = 0.00000001
 amb_rho = 0.00003
 amb_p = 1.0
 
--- ── pressure/speed on state (rho floor + p floor) ──
-mv_pressure st j i =
+-- ── Saha EOS (argon, single ionization; added 2026-09-01, P1) ──
+-- The ionization energy sink. en stays the conserved total energy and the
+-- transport keeps its conservative form untouched; the sink lives entirely
+-- in the EOS map e_int -> p: energy locked in ionization potential exerts
+-- no pressure, and recombination returns it downstream automatically.
+--   p     = (1 + alpha) n k T          (n = rho/m_ion, heavy particles)
+--   e_int = 1.5 (1 + alpha) n k T + alpha n chi
+--   Saha:   alpha^2/(1-alpha) = S(T)/n
+--   S(T)  = 2 (U_i/U_0) (2 pi m_e k T / h^2)^1.5 exp(-chi/kT)
+-- U_i/U_0 = 6 (Ar+ 2P both fine levels vs Ar 1S0; single-T, no excitation
+-- energy, no double ionization - noted limitations). Stable closed form
+-- alpha = 2 / (1 + sqrt(1 + 4 n / S)) holds for all S. The inversion
+-- e_int -> T is a monotone bisection on the exact bracket
+-- [(e - n chi)/(3 n k), e/(1.5 n k)]. Below 2500 K alpha < 1e-10 at any
+-- density down to rho_floor, so cold cells take an exact ideal branch and
+-- never pay the exp.
+k_boltz = 1.380649e-23
+chi_ar = 2.5249680505129372e-18
+chi_over_k = 182882.69143808
+saha_c = 2.8976196474863585e22
+
+eos_alpha n t =
+  if t < 2500.0 then 0.0
+  else
+    let s = saha_c * t * sqrt t * exp (0.0 - chi_over_k / t)
+    2.0 / (1.0 + sqrt (1.0 + 4.0 * n / s))
+
+eos_e n t =
+  let a = 1.0 * eos_alpha n t
+  1.5 * (1.0 + a) * n * k_boltz * t + a * n * chi_ar
+
+eos_temp_bi n eint tl th it =
+  if it >= 24 then 0.5 * (tl + th)
+  else
+    let tm = 0.5 * (tl + th)
+    let em = 1.0 * eos_e n tm
+    if em < eint then eos_temp_bi n eint tm th (it + 1)
+    else eos_temp_bi n eint tl tm (it + 1)
+
+eos_temp n eint =
+  let th = eint / (1.5 * n * k_boltz)
+  if th < 2500.0 then th
+  else
+    let tl_raw = (eint - n * chi_ar) / (3.0 * n * k_boltz)
+    let tl = if tl_raw < 300.0 then 300.0 else tl_raw
+    eos_temp_bi n eint tl th 0
+
+-- floored thermal energy density e_int = en - ke - me (floor matches the
+-- old p >= 1e-6 floor: gamma_m1 * 1.5e-6 = 1e-6)
+mv_eint st j i =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
   let mr = mp_get st mp_f_mr j i
@@ -65,9 +116,22 @@ mv_pressure st j i =
   let e = mp_get st mp_f_en j i
   let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
   let me = 0.5 * bt * bt * inv_mu0
-  let p_raw = gamma_m1 * (e - ke - me)
-  if p_raw < 0.000001 then 0.000001 else p_raw
+  let ei = e - ke - me
+  if ei < 0.0000015 then 0.0000015 else ei
 
+-- ── pressure/speed on state (rho floor + e_int floor) ──
+mv_pressure st j i =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let ei = 1.0 * mv_eint st j i
+  let n = rho_safe / m_ion_ar
+  let t = 1.0 * eos_temp n ei
+  let a = 1.0 * eos_alpha n t
+  if a < 1.0e-10 then gamma_m1 * ei
+  else (1.0 + a) * n * k_boltz * t
+
+-- 5/3 p/rho OVER-estimates c_s once ionization bites (gamma_eff < 5/3
+-- in the Saha band), so the CFL built on it stays safe
 mv_speed st j i =
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
@@ -116,20 +180,22 @@ mv_flux_z st j i fb off =
   float_arr_set fb (off + 4) (vz * bt)
 
 -- ── ghost fill for the full state ──
--- gas: mirror with normal momentum negated (free slip), en rebuilt so the
--- ghost holds the fluid's p with its own momenta and bt.
+-- gas: mirror with normal momentum negated (free slip). The ghost copies
+-- the fluid cell's THERMAL energy e_int directly (EOS-agnostic: equal rho
+-- and e_int give equal p under any EOS; ke is sign-invariant, me rebuilt
+-- for the ghost's own bt), rather than round-tripping through p.
 mv_ghost_gas st jg ig jf fi nsign_r nsign_z btg =
   let rho = mp_get st mp_f_rho jf fi
   let mr = mp_get st mp_f_mr jf fi * nsign_r
   let mz = mp_get st mp_f_mz jf fi * nsign_z
-  let p = mv_pressure st jf fi
   let rho_safe = if rho < rho_floor then rho_floor else rho
+  let ei = 1.0 * mv_eint st jf fi
   let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
   let me = 0.5 * btg * btg * inv_mu0
   let _ = mp_put st mp_f_rho jg ig rho
   let _ = mp_put st mp_f_mr jg ig mr
   let _ = mp_put st mp_f_mz jg ig mz
-  let _ = mp_put st mp_f_en jg ig (p / gamma_m1 + ke + me)
+  let _ = mp_put st mp_f_en jg ig (ei + ke + me)
   mp_put st mp_f_bt jg ig btg
 
 mv_ghost_cell st btp m j i =
@@ -308,11 +374,15 @@ mv_jz st j i =
   let rs = if r < 0.0001 then 0.0001 else r
   inv_mu0 * (rp * mp_get st mp_f_bt (j + 1) i - rm * mp_get st mp_f_bt (j - 1) i) / (2.0 * mp_dr * rs)
 
+-- Spitzer needs the actual temperature: under the Saha EOS the old ideal
+-- readback p m/(rho k) equals (1+alpha) T, up to 2x hot in ionized gas,
+-- so eta comes from the same e_int -> T inversion the pressure uses
 mv_eta st j i =
-  let p = mv_pressure st j i
   let rho = mp_get st mp_f_rho j i
   let rho_safe = if rho < rho_floor then rho_floor else rho
-  let t_eV = p * m_ion_ar * 6.244e18 / rho_safe
+  let ei = 1.0 * mv_eint st j i
+  let t = 1.0 * eos_temp (rho_safe / m_ion_ar) ei
+  let t_eV = t / 11604.518
   let t_c = if t_eV < 0.1 then 0.1 else t_eV
   let eta = 5.0e-5 / (t_c * sqrt t_c)
   if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta

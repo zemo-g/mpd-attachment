@@ -216,11 +216,29 @@ main =
   let okm = fabs (dm - pred) < fabs pred * 0.000001 + 1.0e-18
   let ok26 = if okm then float_arr_get scrq scr_fmass == 0.0 else false
   let f26 = check "one-step mass conservation (interior creates nothing)" ok26 f25
-  if f26 == 0 then
-    let _ = print "SELFTEST PASS (26 checks)"
+  -- (27..29) Saha EOS guards (2026-09-01). References computed
+  -- independently in Python from CODATA constants (chi = 15.759611 eV,
+  -- U_i/U_0 = 6); see the eos_* block in mpd_solver.rail.
+  -- (27) cold limit is EXACTLY the ideal gas (no exp paid, no drift)
+  let nref = 0.0 + 3.0e22
+  let ec27 = 1.5 * nref * k_boltz * 400.0
+  let t27 = 1.0 * eos_temp nref ec27
+  let f27 = check "EOS cold limit exact (T=400)"
+              (fabs (t27 / 400.0 - 1.0) < 0.000000000001) f26
+  -- (28) Saha alpha spot value in the band
+  let a28 = 1.0 * eos_alpha nref 12000.0
+  let f28 = check "Saha alpha(3e22, 12000 K) = 0.4206663"
+              (near a28 0.4206663108 0.000001) f27
+  -- (29) inversion round-trip through the steep band: T -> e_int -> T
+  let e29 = 1.0 * eos_e nref 15000.0
+  let t29 = 1.0 * eos_temp nref e29
+  let f29 = check "EOS round-trip at T=15000"
+              (fabs (t29 / 15000.0 - 1.0) < 0.00001) f28
+  if f29 == 0 then
+    let _ = print "SELFTEST PASS (29 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f26, " of 26)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f29, " of 29)"])
     1
 
 mc_run st ns btp m fb scr dt n =
