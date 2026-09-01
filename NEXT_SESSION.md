@@ -1,4 +1,30 @@
-# Next session: converge the cold conservative run, then judge vs Cory
+# Next session: energy sinks (ionization first), then Hall, then the J-sweep
+
+**CONVERGED 2026-09-01 00:00 (out/phase2_cold2.log): the first
+mass-honest steady state.** Prefilled 60k run, 2.13 ms arc; every
+observable flat for the last 0.8 ms; identity -8.0e-5; floor 0; blowing
+split matches eqs 13/14 to 0.13%; the standing gate CLOSES (audit net
++1.07e-4 vs observed dm/dt +0.99e-4, both just the last 1.7% of fill;
+inlet meters 5.979e-3; walls zero). Steady at 8 kA, TRUE 6 g/s:
+tip p 2717 vs Cory 2104 (+29%); wall p 1337 vs 465 (2.87x); backplate
+profile RISES toward the wall (cathode-side 271) - inverse of the
+pinch-peaked parabola; T_exhaust 34.2 N vs ~25 measured (+37%).
+
+**Read on the discrepancy: the model has NO energy sinks, and the
+biggest missing one is ionization.** 6 g/s argon at 15.76 eV/atom is a
+~230 kW sink against a ~400 kW arc; it is the physics behind u_ci (the
+program's own critical ionization velocity - the xi scaling exists
+BECAUSE of this sink). A coherent over-pressure everywhere (+29% tip,
+2.9x wall, +37% thrust) is exactly what an adiabatic model of a
+half-power-sunk device produces. Recommended P1: an ionization energy
+sink (track ionization fraction via Saha or a simple burn-through to
+full ionization at the u_ci scale; subtract eps_i * ionization rate
+from p's energy), THEN re-judge tip/wall/profile/thrust. Radiation and
+wall losses after. The wall-rising backplate profile may also implicate
+the free-slip chamber wall. Images:
+out/img/phase2_steady6g_{hero,fields}.png.
+
+# Prior runway (for the record)
 
 State as of 2026-08-31 late night: README Status is current. Phases
 0/1/1b done. Three solver gates CLOSED the same day: **implicit

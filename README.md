@@ -115,6 +115,29 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   validation numbers are void** (wrong mdot AND fake interior source);
   the cold conservative run (out/phase2_cold1.log) is chaining toward
   the first trustworthy steady state.
+- **FIRST MASS-HONEST STEADY STATE (2026-09-01 00:00, out/phase2_cold2.log).**
+  Cold start from vacuum proved a death spiral (the 8 kA field pumps the
+  chamber out faster than the choked inlet feeds it; cold1 is the
+  record), so mv_init now PREFILLS 300 K argon at fill_rho = 2e-3 - real
+  devices flow gas before striking the arc - and the inlet cap moved to
+  2000 m/s. The prefilled 60k run (2.13 ms arc) converges cleanly: every
+  observable flat for the last 0.8 ms, floor never fires, identity
+  -8.0e-5, blowing split matches eqs 13/14 to 0.13%. **The standing gate
+  closes: audit net +1.07e-4 kg/s vs observed dm/dt +0.99e-4 (both the
+  last 1.7% of the fill); inlet meters 5.979e-3 of 6.0e-3; walls exactly
+  zero.** Steady observables at 8 kA, TRUE 6 g/s:
+  - tip p **2717 vs Cory 2104 (+29%)**
+  - backplate wall p **1337 vs Cory 465 (2.87x)**, and the solver's
+    backplate profile RISES toward the wall (cathode-side 271) - the
+    INVERSE of the pinch-peaked parabola phase 1b infers from thrust
+  - T_exhaust **34.2 N vs ~25 N measured (+37%)**
+  Reading: with attachment prescribed and mass honest, the solver now
+  over-pressurizes coherently - the model has NO energy sinks. The prime
+  suspect is ionization: 6 g/s of argon at 15.76 eV/atom is a ~230 kW
+  sink against a ~400 kW arc, and it is THE physics behind u_ci (the
+  program's own critical ionization velocity). Radiation and wall losses
+  follow. That is the next physics item, ahead of the J-sweep.
+  Images: `out/img/phase2_steady6g_{hero,fields}.png`.
 
 ## Run
 
