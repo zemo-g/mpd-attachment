@@ -1,4 +1,30 @@
-# Next session: energy sinks (ionization first), then Hall, then the J-sweep
+# Next session: converge partially-ionized eta on Studio, judge attachment
+
+**2026-09-01 pivot, in one breath:** the Saha EOS shipped (P1) and its
+re-converged state REFUTED the sink-alone hypothesis - tip +21%, wall
+2.97x, thrust 33.6 N all survive, because pinch pressure is momentum
+balance against J^2, not energy. The alpha map then showed WHY: the
+state is cold and neutral (T_max 9200 K, alpha_max 3.5%), the old eta
+cap 2e-5 bound in 100% of cells, and total Ohmic input was 7 kW against
+a ~400 kW arc. A uniform capped eta erases arc constriction - the
+attachment mechanism this program exists to predict. Greenlit fix
+(e96c812): partially-ionized resistivity, eta = Spitzer +
+2.2046e-8 sqrt(T)(1-a)/a, caps numeric-only [1e-7, 1e-3]. Work now
+RUNS ON THE STUDIO (user call): compile on Mini (Studio's tios-branch
+rail segfaults our build), scp the binary, nohup there; logs
+self-report wall/ms-per-step/ETA. Baseline checkpoints kept:
+phase2_ckpt_ideal6g.f32, phase2_ckpt_saha_capped6g.f32.
+
+**Next block:** chain out/phase2_pion1.log segments to the plateau,
+then judge: tip/wall/profile/thrust vs Cory AND the alpha + current
+maps (does the arc constrict onto the cathode tip?). Watch the
+ignition transient (Ohmic is ~15x stronger; if a segment detonates,
+add an energy-based dt limiter dt < c e_int / (eta j^2)). Then
+radiation/wall losses if still over-pressured; Hall (P2); J-sweep
+(P3). Two-temperature T_e is the eventual (c) - user flagged it
+plausibly right long-term.
+
+# Prior runway (for the record): energy sinks (ionization first), then Hall, then the J-sweep
 
 **CONVERGED 2026-09-01 00:00 (out/phase2_cold2.log): the first
 mass-honest steady state.** Prefilled 60k run, 2.13 ms arc; every
