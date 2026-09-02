@@ -1,0 +1,171 @@
+#!/opt/homebrew/bin/python3.11
+"""Autonomous claim auditor: local LLM writes checks, execution judges.
+
+Usage:
+  ra_worker.py                 process all unverdicted claims once
+  ra_worker.py --loop          poll claims/ every 5 min, forever
+  ra_worker.py --claim NNN     process one claim
+
+Env: RA_URL   (default http://10.42.0.2:8082/v1)
+     RA_MODEL (default Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq)
+"""
+import json, os, re, subprocess, sys, tempfile, time, urllib.request
+
+HERE = os.path.dirname(os.path.abspath(__file__))
+URL = os.environ.get("RA_URL", "http://10.42.0.2:8082/v1")
+MODEL = os.environ.get("RA_MODEL", "Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq")
+# two tiers: the fast model answers first; anything not CONFIRMED is
+# escalated to the strong model (thinking models burn 10 min and can
+# blow the Metal buffer limit on 12k-token generations, so they only
+# get the hard ones)
+MODEL_STRONG = os.environ.get("RA_MODEL_STRONG", "")
+MAX_TOKENS = int(os.environ.get("RA_MAX_TOKENS", "12000"))
+
+SYSTEM = """You are an adversarial mathematical auditor for a plasma
+physics / CFD program. You are given a CLAIM with numbers. Your job is
+to try to BREAK it by independent re-derivation. Do not trust the
+context; re-derive from first principles and CODATA 2018 constants.
+
+Output format, exactly:
+1. A brief independent derivation (max 30 lines).
+2. ONE python code block (```python ... ```), self-contained, stdlib +
+   numpy + sympy only, that computes the claim's numbers independently
+   and prints one line per checked quantity in EXACTLY this form:
+   CHECK <name>: computed=<value> claimed=<value> -> PASS
+   or -> FAIL (use relative tolerance 1e-3 unless the claim states one).
+3. One line: AGREE or DISAGREE plus the single strongest reason.
+Never print PASS unless your computed value actually matches.
+
+CRITICAL: do NOT do arithmetic by hand in your reasoning, and do not
+try to predict PASS or FAIL yourself. The harness EXECUTES your python
+block and the executed prints are the verdict. Keep any reasoning to a
+few sentences of derivation strategy, then write the code block. All
+numbers are computed by the script, none by you."""
+
+
+def ask(messages, model):
+    body = json.dumps({"model": model, "messages": messages,
+                       "temperature": 0.2, "max_tokens": MAX_TOKENS}).encode()
+    req = urllib.request.Request(URL.rstrip("/") + "/chat/completions",
+                                 data=body, headers={"Content-Type": "application/json"})
+    with urllib.request.urlopen(req, timeout=1800) as r:
+        msg = json.loads(r.read())["choices"][0]["message"]
+        # reasoning models put chain-of-thought in .reasoning and may
+        # leave .content empty; keep both, content first
+        return (msg.get("content") or "") + "\n" + (msg.get("reasoning") or "")
+
+
+def run_block(code):
+    with tempfile.TemporaryDirectory() as td:
+        f = os.path.join(td, "check.py")
+        open(f, "w").write(code)
+        try:
+            r = subprocess.run([sys.executable, "-I", f], cwd=td, timeout=120,
+                               capture_output=True, text=True,
+                               env={"PATH": "/usr/bin:/bin"})
+            # only STDOUT carries verdict lines; stderr (tracebacks,
+            # SyntaxError echoes of the offending source line) must never
+            # be able to spell "-> PASS". A nonzero exit is a harness
+            # failure whatever stdout says.
+            out = r.stdout
+            if r.returncode != 0:
+                out += f"\nCHECK harness: exit {r.returncode}\n" + r.stderr
+            return out
+        except subprocess.TimeoutExpired:
+            return "CHECK harness: TIMEOUT after 120 s"
+
+
+def process(claim_path):
+    out_path = os.path.join(HERE, "verdicts", os.path.basename(claim_path))
+    if os.path.exists(out_path):
+        return
+    status, transcript, passes, fails = run_model(claim_path, MODEL)
+    if status != "CONFIRMED" and MODEL_STRONG:
+        s2, t2, p2, f2 = run_model(claim_path, MODEL_STRONG)
+        transcript += "\n\n=== ESCALATED to " + MODEL_STRONG + " ===" + t2
+        # the strong tier's verdict stands unless it errored
+        if s2 != "CHECK-ERROR":
+            status, passes, fails = s2, p2, f2
+    if status is None:
+        return
+    nnn = os.path.basename(claim_path).split("-")[0]
+    open(out_path, "w").write(
+        f"# {status}  ({passes} pass / {fails} fail)\n"
+        f"model: {MODEL}" + (f" + {MODEL_STRONG}" if MODEL_STRONG else "") +
+        f"\nclaim: {claim_path}\n{transcript}\n")
+    line = f"{time.strftime('%Y-%m-%d %H:%M')}  {nnn}  {status}  ({passes}P/{fails}F)\n"
+    open(os.path.join(HERE, "LEDGER.md"), "a").write(line)
+    print(f"[{nnn}] {status} ({passes}P/{fails}F)", flush=True)
+
+
+def run_model(claim_path, model):
+    nnn = os.path.basename(claim_path).split("-")[0]
+    claim = open(claim_path).read()
+    print(f"[{nnn}] asking {model} ...", flush=True)
+    msgs = [{"role": "system", "content": SYSTEM},
+            {"role": "user", "content": claim}]
+    transcript, output = "", ""
+    for attempt in (1, 2):
+        try:
+            reply = ask(msgs, model)
+        except Exception as e:
+            print(f"[{nnn}] endpoint error: {e}", flush=True)
+            return None, f"endpoint error: {e}", 0, 0
+        transcript += f"\n\n--- model reply (attempt {attempt}) ---\n{reply}"
+        m = re.search(r"```python\n(.*?)```", reply, re.S)
+        if not m:
+            output = "CHECK harness: no python block in reply"
+            break
+        output = run_block(m.group(1))
+        transcript += f"\n\n--- executed output ---\n{output}"
+        if "CHECK harness:" in output or not re.search(r"^CHECK .*-> ?(PASS|FAIL)\s*$", output, re.M):
+            msgs += [{"role": "assistant", "content": reply},
+                     {"role": "user", "content":
+                      "Your check script failed to run:\n" + output[-2000:] +
+                      "\nRepair it. Same output format."}]
+            continue
+        break
+    # verdict lines only: a whole stdout line "CHECK <name>: ... -> PASS"
+    fails = len(re.findall(r"^CHECK .*-> ?FAIL\s*$", output, re.M))
+    passes = len(re.findall(r"^CHECK .*-> ?PASS\s*$", output, re.M))
+    if "CHECK harness:" in output:
+        passes = 0
+    if passes and not fails:
+        status = "CONFIRMED"
+    elif fails:
+        status = "REFUTED"
+    else:
+        status = "CHECK-ERROR"
+    print(f"[{nnn}] {model}: {status} ({passes}P/{fails}F)", flush=True)
+    return status, transcript, passes, fails
+
+
+def next_claim():
+    # re-list every time: claims added or renamed mid-sweep are honoured
+    # in sorted order (prefix a claim 001a.. to jump the queue)
+    for f in sorted(os.listdir(os.path.join(HERE, "claims"))):
+        if f.endswith(".md") and not os.path.exists(
+                os.path.join(HERE, "verdicts", f)):
+            return os.path.join(HERE, "claims", f)
+    return None
+
+
+def sweep():
+    while True:
+        c = next_claim()
+        if c is None:
+            return
+        process(c)
+
+
+if __name__ == "__main__":
+    if "--claim" in sys.argv:
+        n = sys.argv[sys.argv.index("--claim") + 1]
+        for f in os.listdir(os.path.join(HERE, "claims")):
+            if f.startswith(n):
+                process(os.path.join(HERE, "claims", f))
+    elif "--loop" in sys.argv:
+        while True:
+            sweep(); time.sleep(300)
+    else:
+        sweep()
