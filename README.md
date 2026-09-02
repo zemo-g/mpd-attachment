@@ -138,6 +138,66 @@ baseline to beat. Validation target is the Princeton Benchmark Thruster
   program's own critical ionization velocity). Radiation and wall losses
   follow. That is the next physics item, ahead of the J-sweep.
   Images: `out/img/phase2_steady6g_{hero,fields}.png`.
+- **Saha EOS + partially-ionized eta; the ionization-SINK hypothesis is
+  REFUTED (2026-09-01).** The Saha EOS shipped (ionization energy in the
+  EOS, not the sources) and its re-converged state kept every
+  discrepancy: tip +21%, wall 2.97x, thrust 33.6 N. Pinch pressure is
+  momentum balance against J^2, not energy, so an energy sink alone
+  cannot close it. `tools/alpha_map.py` then showed the real defect: the
+  state was cold (T_max 9200 K) and neutral (alpha_max 3.5%), the old
+  eta cap 2e-5 bound in 100% of cells, and total Ohmic input was ~7 kW
+  against a ~400 kW arc. A uniform capped eta ERASES arc constriction -
+  the attachment mechanism this program exists to predict. Fix
+  (e96c812): eta = Spitzer + electron-neutral via the Saha alpha, caps
+  numeric-only [1e-7, 1e-3]. Effect, measured on the first segments:
+  the cap stops binding (97.8% -> 10.2% of cells), eta gains 16.9x
+  spatial dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 ->
+  0.051, and dissipation gets MORE peaked (hottest 1% of plasma volume
+  carries 19.8% of the Ohmic power). Peak |j| sits at the cathode tip
+  corner. New diagnostic `tools/attachment_map.py` measures all of this
+  (exact current stream function I = rB/(mu0/2pi), j from its gradients,
+  Ohmic power on the real 2 pi r dr dz volume).
+- **METERED INLET STOPPED METERING - three segments void (2026-09-01).**
+  The first partially-ionized convergence chain drained instead of
+  converging, and the mass budget did not close: dm/dt sat pinned at
+  -1.395e-3 kg/s while the printed mdot_out swung 6.87e-3 -> 5.61e-3.
+  `phase2_massaudit` on that checkpoint: **inlet delivering 4.200e-3
+  kg/s against a nominal 6.0e-3**, audit net -1.443e-3 matching the
+  run's observed -1.406e-3 - so the interior was conserving mass
+  exactly and the standing gate closed; the BOUNDARY was wrong. Cause:
+  the ghost-velocity cap was gated on the reflected momentum
+  (`cap = rho_fluid * in_vg_cap`, always active), and the annulus needs
+  rho > 4.4e-3 to stay uncapped, but the hotter partially-ionized arc
+  had thinned the near-inlet gas to 8.6e-4. 19 of 29 inlet cells
+  clipped. An independent hand-calculation of the clipped face flux
+  reproduces the audit to four digits. The log said nothing: `(in
+  0.006)` was a hardcoded constant, not a measurement. **Near-miss worth
+  recording: that chain printed tip p 2074 vs Cory 2104 (+1.4%) - an
+  apparent crack of the program's headline number, produced entirely by
+  running at 70% mass flow.** Baselines audited and CLEAN (ideal6g
+  5.9786e-3, saha_capped6g 5.99999e-3), so only that chain is void.
+  Shipped counter-first: `mv_inlet_rate` (reuses `mv_bmass_face`
+  verbatim, so it is the scheme's own flux) with MEASURED `mdot_in` in
+  every periodic print; the cap now engages only below
+  `in_vac_rho = 2e-4`; selftest **32/33** lock metering exact at
+  operating density and the vacuum guard still firing - both verified to
+  FAIL with the defect reintroduced, not merely to pass. Re-audit of the
+  same thin checkpoint: inlet 5.99999578e-3, bit-identical to the clean
+  baselines. Side finding: at the 2e-3 prefill the old cap clipped from
+  init on EVERY run, releasing only as the chamber filled.
+- **Restarting the partially-ionized chain (2026-09-01, in flight).**
+  A restart resumed from the void chain's own checkpoint diverged: vmax
+  8018 -> 25463 m/s, dt 2.31e-8 -> 5.9e-9, mass 1.32e-6 -> 8.5e-7,
+  mdot_out 1.05e-2 against a 6e-3 inlet - the same magnetic-pump death
+  spiral cold1 recorded. That state was ALREADY inside the pump regime
+  (its vmax had climbed 5333 -> 8018 in the final void segment, masked
+  by the under-delivering inlet); honest mass flow does not rescue a
+  state already there. Kept as `out/phase2_pionfix_spiral_void.log`.
+  Chain restarted from the dense, correctly-metered `saha_capped6g`
+  checkpoint - which is what the original chain resumed from - as
+  `out/phase2_pf1.log`. **Nothing about the partially-ionized steady
+  state is measured yet; every number from the void chain is
+  provisional.**
 
 ## Run
 

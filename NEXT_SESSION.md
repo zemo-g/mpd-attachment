@@ -1,4 +1,130 @@
-# Next session: converge partially-ionized eta on Studio, judge attachment
+# Next session: converge the partially-ionized chain at TRUE 6 g/s
+
+**Read `notes/pion_chain_log.md` first** - it is the segment-by-segment
+trend table and the account of what went wrong on 2026-09-01.
+
+**State in one breath.** Saha EOS is in and the ionization-sink
+hypothesis is REFUTED (pinch pressure is momentum balance vs J^2). The
+alpha map found the real defect - a uniform capped eta erasing arc
+constriction - and the greenlit fix (partially-ionized eta, e96c812)
+demonstrably works: cap binding 97.8% -> 10.2% of cells, 16.9x eta
+dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
+|j| at the cathode tip corner. **But the first convergence chain ran at
+4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
+The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
+
+## RUNNING NOW (2026-09-01 evening)
+
+Two fate segments with the PRESCRIBED-FLUX inlet (approach A, see
+`notes/pion_chain_log.md` "REVIEW 2026-09-01 evening"), both resumed
+from `out/phase2_ckpt_pf2_honest6g.f32`, cfl 0.30, 20k steps, each in
+its own working dir so their `out/` do not collide:
+
+- `/tmp/run_A_nosink/run.log` (binary `/tmp/p2A_nosink`, kappa_wall 0):
+  does the vmax runaway survive once the inlet momentum artefact is
+  gone? This is the clean model-physics question.
+- `/tmp/run_A_sink/run.log` (binary `/tmp/p2A_sink`, kappa_wall 1): the
+  wall-sink test, uncontaminated.
+
+At completion each writes `out/phase2_state.csv` and `out/phase2_ckpt.f32`
+INSIDE its run dir; copy them to the repo as
+`out/phase2_state_A_{nosink,sink}.csv`, `out/phase2_ckpt_A_{nosink,sink}.f32`.
+Judge: where vmax lives (interior vs inlet row; the review script in
+the chain log), mdot_in exact throughout, drain, and nosink vs sink
+envelope statistics. Then chain whichever is the model (sink on).
+
+Every previous "runaway" verdict (pf pair, m2 pair) is CONTAMINATED by
+the old ghost's 1/rho_c momentum injection. Do not cite them as
+physics. ws30 was killed while detonating (`out/phase2_ws30_confounded.log`).
+
+Research assistant: `tools/assistant/ra_worker.py --loop` on
+`127.0.0.1:8095` (own mlx server, PID in `/tmp/ra_mlx_server.log`),
+claims 001a..001f queued ahead; verdicts land in
+`tools/assistant/verdicts/` and `LEDGER.md`. Adjudicate REFUTED ones in
+writing.
+
+## The next block
+
+1. Chain segments until mass, vmax, ptip, pwall, mdot_in, mdot_out all
+   go flat. Judge the plateau on the TREND across segments, never one
+   endpoint.
+2. At the plateau run the standing gate and the full judgment set:
+   ```bash
+   $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
+   /opt/homebrew/bin/python3.11 tools/alpha_map.py <tag>
+   /opt/homebrew/bin/python3.11 tools/attachment_map.py 8000 <tag>
+   /opt/homebrew/bin/python3.11 tools/render_fields.py 8000 <tag>
+   /opt/homebrew/bin/python3.11 tools/compare_bp_profile.py 8000
+   ```
+3. Judge tip/wall/profile/thrust vs Cory AND the real question: does the
+   current constrict onto the cathode tip? **Be honest about what is
+   predicted.** `mp_bt_presc` prescribes B_theta on the electrode faces
+   from `mp_ienc_cath` (linear along the barrel, `pbt_phi = 0.2` at the
+   tip), so the surface attachment split is an INPUT. What is free is
+   the interior channel: `attachment_map.py`'s dissipation concentration,
+   Ohmic power centroid radius, and peak-|j| location. The surface split
+   only becomes a prediction in Phase 3, with sheath BCs.
+
+## Open finding to carry into the judgment
+
+**The arc is too quiet.** Across the void chain V_arc fell 6.9 -> 6.0 V
+(total Ohmic 54.8 -> 47.7 kW) and was still falling, because a hotter
+plasma is a better conductor (Spitzer eta ~ T^-3/2). A real PBT at 8 kA
+runs tens of volts. Part of that gap is electrode falls this model has
+no sheaths for until Phase 3, but the standard answer in the MPD
+literature for exactly this gap is ANOMALOUS (turbulent /
+microinstability) resistivity, which classical Spitzer + electron-neutral
+cannot contain by construction. Re-measure at the honest plateau. If it
+is still ~5-7 V there, that is the finding and the natural next block -
+not a bug to hunt. (Numbers above came from void-chain states; treat as
+provisional until re-measured.)
+
+## What shipped 2026-09-01 (fix + guards, greenlit)
+
+The metered inlet silently stopped metering: the ghost-velocity cap was
+gated on the reflected momentum (`cap = rho_fluid * in_vg_cap`, always
+active) and the annulus needs rho > 4.4e-3 to stay uncapped, but the
+hotter arc thinned the near-inlet gas to 8.6e-4. 19/29 inlet cells
+clipped; 4.2e-3 delivered against a nominal 6.0e-3, for three segments.
+The log's `(in 0.006)` was a hardcoded constant.
+
+- `mv_inlet_rate` in `rail/mpd_solver.rail` reuses `mv_bmass_face`
+  verbatim, so the counter IS the scheme's own flux; the runner prints
+  measured `mdot_in` every period.
+- The cap now engages only below `in_vac_rho = 2e-4` (0.1 * fill_rho).
+- Selftest **32/33**: metering exact at operating density; vacuum guard
+  still clips. Both verified to FAIL with the defect reintroduced.
+- Suite is **33 checks**. Gate was green before (31/31) and after.
+
+**Compile on the Studio with `~/projects/rail-public/rail_native`.** (An
+earlier version of this file said to compile on the Mini and scp; that
+is superseded - see CLAUDE.md.)
+
+## Do not repeat these
+
+- **A converged-looking match can be a wrong-flow artifact.** The void
+  chain printed tip p 2074 vs Cory 2104 (+1.4%) on the program's
+  headline number, purely from running at 70% mass flow. Verify
+  `mdot_in` before believing any agreement.
+- **An assumption in a comment is not a check.** "The cap disengages in
+  the operating regime" was true at ideal-EOS density and expired
+  silently when the regime changed.
+- **Do not resume from a state already inside the magnetic-pump
+  regime.** A restart from the void chain's own checkpoint diverged
+  (vmax 8018 -> 25463, dt 2.31e-8 -> 5.9e-9, mass 1.32e-6 -> 8.5e-7);
+  honest mass flow does not rescue a state already spiralling. Kept as
+  `out/phase2_pionfix_spiral_void.log`. Resume from a dense,
+  correctly-metered checkpoint.
+
+## Named checkpoints
+
+- `phase2_ckpt_ideal6g.f32` - ideal EOS, converged, inlet 5.9786e-3 CLEAN
+- `phase2_ckpt_saha_capped6g.f32` - Saha EOS + old capped eta, inlet
+  5.99999e-3 CLEAN (the current chain's start)
+- `phase2_ckpt_pion_4g2_void.f32` - the void chain's end state; inlet was
+  metering 4.2e-3. Keep for the record, do NOT resume from it.
+
+# Prior runway: the partially-ionized pivot, as written 2026-09-01
 
 **2026-09-01 pivot, in one breath:** the Saha EOS shipped (P1) and its
 re-converged state REFUTED the sink-alone hypothesis - tip +21%, wall
@@ -23,6 +149,7 @@ add an energy-based dt limiter dt < c e_int / (eta j^2)). Then
 radiation/wall losses if still over-pressured; Hall (P2); J-sweep
 (P3). Two-temperature T_e is the eventual (c) - user flagged it
 plausibly right long-term.
+
 
 # Prior runway (for the record): energy sinks (ionization first), then Hall, then the J-sweep
 

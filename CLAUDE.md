@@ -31,13 +31,19 @@ re-measure (published numbers lag the work).
 ```bash
 cd ~/projects/mpd-attachment
 RAIL=~/projects/rail-public/rail_native        # Studio (Mini: ~/projects/rail/rail_native)
-$RAIL run rail/selftest.rail                   # 31 checks; grep the last line, exit code lies
+$RAIL run rail/selftest.rail                   # 36 checks; grep the last line, exit code lies
 ```
 - Checks 22-25 lock the implicit Thomas operator (22 is boundary-order
   by design, do NOT "fix" it to exact). Check 26 is the mass gate: one
   measured step, dm == dt * boundary rate to 1e-6 rel, floor silent.
   Checks 27-31 lock the Saha EOS and the partially-ionized eta against
-  independently computed Python references.
+  independently computed Python references. Checks 32-33 lock the
+  prescribed-flux inlet: counter exact at operating density; the face
+  the scheme consumes exact on a VACUUM inlet row (S = 2 rho_in v_in,
+  jump 0) with the counter agreeing.
+  Checks 34-35 lock the MUSCL reconstruction (exact on linear data,
+  clipped at extrema). Check 36 locks the wall sink (analytic rate,
+  mass untouched, counter books the same Joules).
 - After a converged run, the standing gate: `phase2_massaudit`'s
   boundary net must match the run's observed dm/dt trend.
 - The stress identity prints at every segment end (expect ~1e-4).
@@ -72,7 +78,12 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   locale lock, EACH evaluation). Inline literals and args are free.
   Hoist constants out of hot loops. notes/rail-const-atof.md.
 - **scr is 55641 floats** (er 0 / ez 13780 / parr 27560 / fmass 41340 /
-  tri 41341-41860 / eta cache 41861+); **fb is 25**. Anything calling
+  tri 41341-41860 / eta cache 41861+); **fb is 41 since 2026-09-01** (MUSCL face sums S at 0/5/10/15, face
+  jumps d at 20/25/30/35, cumulative wall-sink Joules at 40; it was 25
+  before that day). The hyperbolic step is second-order
+  (piecewise-linear minmod reconstruction, faces touching any non-fluid
+  cell drop to first order so every ghost/metering cancellation is
+  bit-preserved). Anything calling
   mv_rco/mv_zco/mv_heat_loop directly must fill the eta cache first
   (mv_eta_loop st scr 0) or the operators silently run eta = 0.
 - Rail compiler bug: a top-level float constant passed as a user-fn
@@ -83,6 +94,31 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
 - `rail_native run` IGNORES --out-prefix; compile then run a copied
   binary. Imports do not dedupe (libraries import nothing; runners
   import pbt, semi_lib, mhd_pbt, stress_diag, mpd_solver in order).
+- **The inlet is a PRESCRIBED-FLUX face (mv_face_zin, 2026-09-01), not
+  a ghost.** History, so it is never rebuilt: the flux-metered ghost
+  (ghost rho = fluid rho, momentum reflected around the nominal) metered
+  MASS exactly but carried a momentum flux 0.5 mz_g^2/rho_c that scales
+  as 1/rho_c: ~1e5 Pa at rho_c 3.5e-4 against a physical 2.2e3 Pa. The
+  saved pf2/pf3/m2cfl15 states had vmax IN the inlet row. Its velocity
+  cap, however gated, also engaged whenever the row thinned (4.2e-3 of
+  6.0e-3 kg/s for three segments; 2.87e-3 in every second-order
+  segment) and the comment justifying it ("a mass-flow controller cannot
+  force 6 g/s into vacuum") is false: a choked injector delivers fixed
+  mass flow regardless of downstream pressure. The face now carries
+  rho_in v_in, rho_in v_in^2 + p_in, (e_in + p_in) v_in in every regime.
+  **Read `mdot_in`, never the nominal**, and arm every run monitor with
+  `mdot_in=0\.00[0-5]` (dry-test the pattern against an old log first:
+  ws30 has 6 hits). A counter nobody reads is not a counter.
+- **The massaudit gate self-checks now.** It was a COPY of the face
+  formula, so it silently audited the OLD scheme after the inlet
+  changed (0.211 kg/s at the inlet). It now takes one real mv_step and
+  prints |observed dm/dt - floor - net|/|net| with GATE PASS/FAIL
+  (4.3e-11 on pf2). If that line fails, the family table is stale, not
+  the solver.
+- A converged-looking match can be a wrong-flow artifact. That chain hit
+  tip p 2074 vs Cory 2104 (+1.4%) on the program's headline number while
+  running at 70% mass flow. Verify `mdot_in` before believing any
+  agreement.
 - The ignition transient under partially-ionized eta detonates a
   frozen dt within ~50 steps: always adapt dt (the runner recomputes
   every 4 steps; if a segment still detonates, add an energy-based
