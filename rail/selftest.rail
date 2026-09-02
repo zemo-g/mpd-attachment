@@ -219,7 +219,7 @@ main =
   -- and the floor must not fire DURING that step.
   let stq = mv_init jt2
   let nsq0 = mv_init jt2
-  let fbq = float_arr_new 41 0.0
+  let fbq = float_arr_new 42 0.0
   let scrq = float_arr_new 55641 0.0
   let stw = mc_run stq nsq0 btp m fbq scrq 0.0 50
   let _ = mv_apply_ghosts stw btp m
@@ -261,12 +261,18 @@ main =
   let _ = mp_put ste mp_f_bt 60 50 0.0
   let _ = mp_put ste mp_f_en 60 50 8399.1649143
   let et30 = 1.0 * mv_eta_calc ste 60 50
-  let f30 = check "eta partially-ionized (T=9000) = 1.317e-4"
-              (fabs (et30 / 0.0001317091 - 1.0) < 0.001) f29
+  -- References re-derived 2026-09-01 late for the Coulomb logarithm
+  -- (NRL ln(Lambda) = 23 - ln(sqrt(n_e[cm^-3]) / T_eV^1.5)): at n =
+  -- 3e22, T = 9000 K alpha = 0.03452, ln(Lambda) = 5.332, eta_ei =
+  -- 4.0594e-4 + eta_en 5.8503e-5; at T = 50000 K (alpha = 1)
+  -- ln(Lambda) = 6.221, eta = 3.6170e-5. The old 1.317e-4 / 5.59e-6
+  -- were the ln(Lambda) = 0.96 coefficient (claim 001a).
+  let f30 = check "eta partially-ionized (T=9000) = 4.644e-4"
+              (fabs (et30 / 0.00046444552224 - 1.0) < 0.001) f29
   let _ = mp_put ste mp_f_en 60 50 137877.86303
   let et31 = 1.0 * mv_eta_calc ste 60 50
-  let f31 = check "eta fully-ionized limit = Spitzer 5.59e-6"
-              (fabs (et31 / 0.000005590582 - 1.0) < 0.001) f30
+  let f31 = check "eta fully-ionized limit = Spitzer lnL 6.22: 3.617e-5"
+              (fabs (et31 / 0.000036169828934 - 1.0) < 0.001) f30
   -- (32..33) inlet guards (2026-09-01). History: the metered ghost's
   -- velocity cap engaged on the reflected MOMENTUM and silently clipped
   -- 19 of 29 inlet rows for three segments; gating it on near-vacuum
@@ -327,7 +333,7 @@ main =
   let eit = 0.0 + 8399.1649143
   let _ = mp_put st36 mp_f_en 20 40 (en0v - ei0 + eit)
   let m36a = 1.0 * mv_total_mass st36 m
-  let fb36 = float_arr_new 41 0.0
+  let fb36 = float_arr_new 42 0.0
   let dt36 = 0.0 + 1.0e-9
   let _ = mv_wall_loop st36 m fb36 dt36 0
   let m36b = 1.0 * mv_total_mass st36 m
@@ -343,12 +349,55 @@ main =
   let okfb = fabs (float_arr_get fb36 40 / (de36 * vol36) - 1.0) < 0.000000001
   let ok36 = if okde then if okm36 then okfb else false else false
   let f36 = check "wall sink analytic rate, mass untouched" ok36 f35
-  if f36 == 0 then
-    let _ = print "SELFTEST PASS (36 checks)"
+  -- (37) Ohmic counter: with bt = c r everywhere (including ghosts) the
+  -- discrete jz is exactly 2 c / mu0 in every cell and jr = 0, so with a
+  -- uniform eta cache one mv_heat_loop must book dt eta jz^2 V_fluid
+  -- Joules into fb slot 41, where V_fluid is summed independently of
+  -- the current stencil. It also must raise en by dt eta jz^2 per cell.
+  let st37 = mv_init jt2
+  let c37 = 0.0 + 0.5
+  let _ = st37_fill st37 c37 0
+  let scr37 = float_arr_new 55641 0.0
+  let eta37 = 0.0 + 0.0001
+  let _ = st37_eta scr37 eta37 0
+  let fb37 = float_arr_new 42 0.0
+  let dt37 = 0.0 + 1.0e-9
+  let en37a = mp_get st37 mp_f_en 20 40
+  let _ = mv_heat_loop st37 m scr37 fb37 dt37 0
+  let en37b = mp_get st37 mp_f_en 20 40
+  let jz37 = 2.0 * c37 * inv_mu0
+  let vf37 = 1.0 * st37_vol m 0 0.0
+  let want37 = dt37 * eta37 * jz37 * jz37 * vf37
+  let okfb37 = fabs (float_arr_get fb37 41 / want37 - 1.0) < 0.000000001
+  let oken37 = fabs ((en37b - en37a) / (dt37 * eta37 * jz37 * jz37) - 1.0) < 0.000000001
+  let ok37 = if okfb37 then oken37 else false
+  let f37 = check "Ohmic counter books dt eta j^2 V_fluid" ok37 f36
+  if f37 == 0 then
+    let _ = print "SELFTEST PASS (37 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f36, " of 36)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f37, " of 37)"])
     1
+
+st37_fill stx c ji =
+  if ji >= mp_nrnz then 0
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let _ = mp_put stx mp_f_bt j i (c * mp_r_of j)
+    st37_fill stx c (ji + 1)
+
+st37_eta scr eta ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = float_arr_set scr (scr_eta + ji) eta
+    st37_eta scr eta (ji + 1)
+
+st37_vol m ji acc =
+  if ji >= mp_nrnz then 1.0 * acc
+  else
+    let v = if arr_get m ji == 0 then mv_tau * mp_r_of (ji / mp_nz) * mp_dr * mp_dz else 0.0
+    st37_vol m (ji + 1) (acc + v)
 
 mc_run st ns btp m fb scr unused n =
   if n <= 0 then st

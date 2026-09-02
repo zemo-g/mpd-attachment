@@ -31,7 +31,7 @@ re-measure (published numbers lag the work).
 ```bash
 cd ~/projects/mpd-attachment
 RAIL=~/projects/rail-public/rail_native        # Studio (Mini: ~/projects/rail/rail_native)
-$RAIL run rail/selftest.rail                   # 36 checks; grep the last line, exit code lies
+$RAIL run rail/selftest.rail                   # 37 checks; grep the last line, exit code lies
 ```
 - Checks 22-25 lock the implicit Thomas operator (22 is boundary-order
   by design, do NOT "fix" it to exact). Check 26 is the mass gate: one
@@ -43,7 +43,10 @@ $RAIL run rail/selftest.rail                   # 36 checks; grep the last line, 
   jump 0) with the counter agreeing.
   Checks 34-35 lock the MUSCL reconstruction (exact on linear data,
   clipped at extrema). Check 36 locks the wall sink (analytic rate,
-  mass untouched, counter books the same Joules).
+  mass untouched, counter books the same Joules). Check 37 locks the
+  Ohmic counter (fb slot 41: dt eta j^2 V_fluid with bt = c r, V_fluid
+  summed independently of the current stencil). Checks 30-31 carry the
+  Coulomb-logarithm references (NRL ln(Lambda) 5.33 / 6.22).
 - After a converged run, the standing gate: `phase2_massaudit`'s
   boundary net must match the run's observed dm/dt trend.
 - The stress identity prints at every segment end (expect ~1e-4).
@@ -74,6 +77,19 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
 
 ## Standing traps (hard-won, do not relearn)
 
+- **`$RAIL run file.rail` compiles AND RUNS it in the current dir.** For
+  phase2_run.rail that means a full 20k-step segment resuming from
+  `out/phase2_ckpt.f32` in the REPO, which it then overwrites. Build
+  production binaries with the compile-only form `$RAIL file.rail && cp
+  /tmp/rail_out ...` (as the recipes above do) and run them in their
+  own working dir. Bit 2026-09-01 late: guard ckpt restored from
+  /tmp/ckpt_guard.f32.
+- **eta_ei carries the NRL Coulomb logarithm** (2026-09-01 late). The
+  old 5.0e-5/T^1.5 was ln(Lambda) = 0.96, a 4-5x too-conductive arc in
+  the current-carrying cells (assistant claim 001a). Every V_arc / Ohmic
+  number from before this change is under the legacy coefficient;
+  `tools/attachment_map.py` prints both. The step line now prints
+  `V_arc=` (P_ohm / J from fb slot 41).
 - **Top-level float-const references are runtime atofs** (~50ns + a
   locale lock, EACH evaluation). Inline literals and args are free.
   Hoist constants out of hot loops. notes/rail-const-atof.md.

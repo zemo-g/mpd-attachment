@@ -45,7 +45,8 @@ DR, DZ = 0.0005, 0.00125
 # ── read state ────────────────────────────────────────────────────────
 F = {k: np.zeros((NR, NZ)) for k in ["r", "z", "rho", "p", "bt"]}
 mask = np.zeros((NR, NZ), int)
-with open(os.path.join(ROOT, "out", "phase2_state.csv")) as f:
+STATE = os.environ.get("STATE", os.path.join(ROOT, "out", "phase2_state.csv"))
+with open(STATE) as f:
     for row in csv.DictReader(f):
         j, i = int(row["j"]), int(row["i"])
         F["r"][j, i] = float(row["r_m"])
@@ -95,12 +96,17 @@ tt = np.zeros_like(rho)
 for j, i in zip(*np.where(fluid)):
     al[j, i], tt[j, i] = alpha_from_p(rho[j, i], p[j, i])
 
-# eta exactly as mv_eta_calc: Spitzer + electron-neutral, caps numeric-only
+# eta exactly as mv_eta_calc (2026-09-01 late): Spitzer with the NRL
+# Coulomb logarithm + electron-neutral, caps numeric-only
 a_f = np.maximum(al, 1e-8)
 t_eV = np.maximum(tt / 11604.518, 0.1)
-eta_ei = 5.0e-5 / (t_eV * np.sqrt(t_eV))
+n_e_cm3 = np.maximum(a_f * rho / M_AR, 1.0) * 1e-6
+lnlam = np.clip(23.0 - np.log(np.sqrt(n_e_cm3) / (t_eV ** 1.5)), 2.0, 20.0)
+eta_ei = 5.2e-5 * lnlam / (t_eV * np.sqrt(t_eV))
 eta_en = 2.2046e-8 * np.sqrt(np.maximum(tt, 0.0)) * (1.0 - a_f) / a_f
 eta = np.clip(eta_ei + eta_en, ETA_FLOOR, ETA_CAP)
+# legacy coefficient (ln(Lambda) = 0.96, pre 2026-09-01 late) for comparison
+eta_legacy = np.clip(5.0e-5 / (t_eV * np.sqrt(t_eV)) + eta_en, ETA_FLOOR, ETA_CAP)
 
 # ── current density from the exact stream function ────────────────────
 # Differentiate on the FULL array (ghosts included), THEN slice. Slicing
@@ -141,6 +147,18 @@ print(f"alpha mean {af.mean():.4f} max {af.max():.4f} "
 # implied arc voltage below is the honest cross-check.
 print(f"TOTAL OHMIC POWER  {P_tot/1000.0:.1f} kW"
       f"   => R_arc {P_tot/(J*J)*1000.0:.2f} mOhm, V_arc {P_tot/J:.1f} V")
+
+# ── Coulomb-logarithm counter ────────────────────────────────────────
+# ln(Lambda) statistics and what the LEGACY coefficient (ln(Lambda) =
+# 0.96, claim 001a) would dissipate on the same current pattern.
+q_l = np.where(fluid, eta_legacy * jmag ** 2, 0.0)
+P_l = float((q_l * dV).sum())
+hot = fluid & (jmag > 0.1 * jmag[fluid].max())
+print(f"ln(Lambda) NRL: fluid med {np.median(lnlam[fluid]):.2f}  "
+      f"in |j|>10% cells med {np.median(lnlam[hot]):.2f} min {lnlam[hot].min():.2f} max {lnlam[hot].max():.2f}"
+      f"   (legacy coefficient implied 0.96)")
+print(f"eta in |j|>10% cells med {np.median(eta[hot]):.3e} (legacy {np.median(eta_legacy[hot]):.3e})")
+print(f"OHMIC under legacy eta, same j: {P_l/1000.0:.1f} kW  => V_arc {P_l/J:.1f} V  (current/legacy {P_tot/max(P_l,1e-30):.2f}x)")
 
 # where the dissipation sits
 Pw = q * dV

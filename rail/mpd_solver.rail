@@ -30,7 +30,7 @@
 --   sweep write (telescopes to the exact magnetic-energy change, so p is
 --   untouched by field transport) plus explicit Ohmic heating dt eta j^2.
 --   Hall + grad-pe stay explicit (whistler dt) and p-absorbing, as before.
---   eta = Spitzer 5e-5/T_eV^1.5 capped to [1e-7, 2e-5] (physical band);
+--   eta = Spitzer + electron-neutral (mv_eta_calc) capped to [1e-7, 1e-3];
 --   Hall density floor n_hall = 1e19 m^-3 (standard vacuum clamp).
 --   EOS: Saha single-ionization argon (the ionization energy sink) - see
 --   the eos_* block. grad-pe still uses pe = p/2 (full-ionization limit);
@@ -645,7 +645,19 @@ mv_eta_calc st j i =
   let a = if a_raw < 0.00000001 then 0.00000001 else a_raw
   let t_eV = t / 11604.518
   let t_c = if t_eV < 0.1 then 0.1 else t_eV
-  let e_ei = 5.0e-5 / (t_c * sqrt t_c)
+  -- Coulomb logarithm (greenlit 2026-09-01 late): the old coefficient
+  -- 5.0e-5 was Spitzer 5.2e-5 ln(Lambda) with ln(Lambda) = 0.96, i.e.
+  -- the arc 4-5x too conductive in its current-carrying cells (NRL
+  -- gives 5-6 there). NRL form for T_e < 10 eV, n_e in cm^-3:
+  --   ln(Lambda) = 23 - ln(sqrt(n_e) / T_eV^1.5), clipped to [2, 20]
+  -- n_e = alpha n from the same Saha inversion; the alpha floor makes
+  -- n_e tiny in cold gas, where the clip at 20 bounds it and eta_en
+  -- dominates anyway.
+  let ne_cm3 = a * n * 0.000001
+  let ne_c = if ne_cm3 < 1.0 then 1.0 else ne_cm3
+  let lnl_raw = 23.0 - 0.5 * log ne_c + 1.5 * log t_c
+  let lnl = if lnl_raw < 2.0 then 2.0 else if lnl_raw > 20.0 then 20.0 else lnl_raw
+  let e_ei = 5.2e-5 * lnl / (t_c * sqrt t_c)
   let e_en = 2.2046e-8 * sqrt t * (1.0 - a) / a
   let eta = e_ei + e_en
   if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta
@@ -922,17 +934,24 @@ mv_rsweep ns btp m scr dt i =
 -- explicit Ohmic heating dt eta j^2 (post-diffusion field; stencils at
 -- boundary-adjacent cells read the previous fill of the ghost cells,
 -- one operator stale, first-order like every source here)
-mv_heat_cell ns scr dt j i =
+-- Ohmic counter (2026-09-01, ships BEFORE the ln(Lambda) change): fb slot
+-- 41 accumulates the Joules deposited, sum dt eta j^2 2 pi r dr dz over
+-- fluid cells, so every step print can report V_arc = P_ohm / J.
+mv_heat_cell ns scr fb dt j i =
   let et = 1.0 * mv_eta_cache scr j i
   let jr = 1.0 * mv_jr ns j i
   let jz = 1.0 * mv_jz ns j i
-  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dt * et * (jr * jr + jz * jz))
+  let de = dt * et * (jr * jr + jz * jz)
+  let r = mp_r_of j
+  let vol = 6.283185307179586 * r * mp_dr * mp_dz
+  let _ = float_arr_set fb 41 (float_arr_get fb 41 + de * vol)
+  mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + de)
 
-mv_heat_loop ns m scr dt ji =
+mv_heat_loop ns m scr fb dt ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_heat_cell ns scr dt (ji / mp_nz) (ji % mp_nz) else 0.0
-    mv_heat_loop ns m scr dt (ji + 1)
+    let _ = if arr_get m ji == 0 then mv_heat_cell ns scr fb dt (ji / mp_nz) (ji % mp_nz) else 0.0
+    mv_heat_loop ns m scr fb dt (ji + 1)
 
 -- wall sink: cold-wall conduction for every fluid face whose neighbor
 -- is electrode or wall (masks 1/2/4/5; never inlet 6, outflow 7, axis 3).
@@ -1109,14 +1128,14 @@ mv_inlet_rate st m dt =
 -- (exact for the whole hyperbolic phase), hyperbolic st -> ns
 -- (+ explicit Hall), floor. ns and scratch are caller-owned and reused
 -- (no per-step allocation; the caller double-buffers st <-> ns).
--- fb: 41-float flux scratch (see mv_lxf_field layout). scr: one 55641-float array carved by offset
+-- fb: 42-float flux scratch (see mv_lxf_field layout). scr: one 55641-float array carved by offset
 -- (er 0, ez +13780, parr +27560, fmass 41340, tridiagonal lanes
 -- 41341..41860, eta +41861).
 mv_step st ns btp m fb scr dt =
   let _ = mv_eta_loop st scr 0
   let _ = mv_zsweep st btp m scr dt 1
   let _ = mv_rsweep st btp m scr dt 1
-  let _ = mv_heat_loop st m scr dt 0
+  let _ = mv_heat_loop st m scr fb dt 0
   let _ = mv_wall_loop st m fb dt 0
   let _ = mv_apply_ghosts st btp m
   let _ = mv_parr_loop st scr 0

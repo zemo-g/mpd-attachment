@@ -87,6 +87,12 @@ run_loop st ns aux btp m fb scr n =
         let pww = if dtw > 0.0 then (wj - float_arr_get aux 4) / dtw else 0.0
         let _ = float_arr_set aux 4 wj
         let _ = float_arr_set aux 5 tnow
+        -- Ohmic counter: fb slot 41 is cumulative Joules deposited by
+        -- eta j^2; interval-average power over the current gives V_arc
+        let oj = float_arr_get fb 41
+        let pohm = if dtw > 0.0 then (oj - float_arr_get aux 6) / dtw else 0.0
+        let _ = float_arr_set aux 6 oj
+        let varc = pohm / run_jtot
         let sdone = run_nsteps - n
         let el = time 0 - to_int (float_arr_get aux 3)
         let msps = if sdone > 0 then el * 1000 / sdone else 0
@@ -97,6 +103,7 @@ run_loop st ns aux btp m fb scr n =
                     "  pwall=", show_float pw, "  mdot_in=", show_float mdin,
                     "  mdot_out=", show_float (float_arr_get am 0),
                     "  P_wall=", show_float pww,
+                    "  V_arc=", show_float varc,
                     "  wall=", show el, "s ", show msps, "ms/step eta ", show etam, "min"])
       else 0
     run_loop ns st aux btp m fb scr (n - 1)
@@ -178,9 +185,9 @@ main =
       let _ = mv_load_state "out/phase2_ckpt.f32" st0
       print "  resumed from out/phase2_ckpt.f32"
     else 0
-  let fb = float_arr_new 41 0.0
+  let fb = float_arr_new 42 0.0
   let scr = float_arr_new 55641 0.0
-  let aux = float_arr_new 6 0.0
+  let aux = float_arr_new 8 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0
   let _ = float_arr_set aux 2 0.0

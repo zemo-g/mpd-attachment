@@ -665,3 +665,35 @@ Notes:
   5-10 at these n_e, T. eta_ei is therefore 5-10x low. This is the
   best candidate for the too-quiet arc (V_arc ~5 V). Solver change,
   owner's greenlight needed; gates before/after.
+
+### 2026-09-01 late: Coulomb logarithm (greenlit "A, go ahead")
+
+Counter first. `mv_heat_cell` now books dt eta j^2 2 pi r dr dz into fb
+slot 41; phase2_run/smoke print `V_arc = P_ohm / J` on every step line
+(selftest 37: bt = c r gives uniform jz = 2c/mu0, counter equals dt eta
+jz^2 V_fluid to 1e-9; verified to FAIL on a halved counter). On the
+A_sink segment-1 state the in-run counter says 15.9 V where
+attachment_map.py says 19.5 V (tool re-derives eta from p and uses
+np.gradient for j; the 20% gap is the tool's, noted, not chased).
+
+Then the change: `mv_eta_calc` eta_ei = 5.2e-5 ln(Lambda) / T_eV^1.5,
+ln(Lambda) = clip(23 - ln(sqrt(n_e[cm^-3]) / T_eV^1.5), 2, 20), n_e =
+alpha n. Checks 30-31 re-referenced (Python from the same constants:
+n = 3e22, 9000 K: lnL 5.332, eta 4.6445e-4; 50000 K: lnL 6.221, eta
+3.6170e-5). Gates: selftest 37/37 before and after; massaudit on the
+A_sink checkpoint 3.0e-11 PASS before and after (eta does not touch
+mass, as expected).
+
+200-step smoke from the A_sink checkpoint: V_arc 33.4 V at step 0
+(2.1x the legacy 15.9, matching the tool's 1.98x on frozen j), relaxing
+to 27.0 V by step 150 as j redistributes; ptip 1733 -> 2200-2370 Pa
+(Cory 2104); pwall 449 -> 452 (Cory 465); dt untouched 2.99e-8 ->
+2.94e-8; inlet exact.
+
+Overnight chains (all from the A_sink / A_nosink segment-1 states):
+- /tmp/run_A_sink_lnl: ln(Lambda) solver, kappa_wall 1, 8 segments.
+  THE MODEL.
+- /tmp/run_A_sink, /tmp/run_A_nosink: legacy-eta controls, 6 more
+  segments each (no V_arc column in their binaries).
+Each dir: chain.log (segment start/done), run_segN.log, out/ckpt_segN
+.f32, out/state_segN.csv. Chain driver /tmp/chain_dir.sh.

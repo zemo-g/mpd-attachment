@@ -95,7 +95,7 @@ main =
   -- Take one real mv_step and compare the observed dm/dt with the net;
   -- floor mass (scr_fmass) is booked separately.
   let ns = float_arr_new mp_state 0.0
-  let fb = float_arr_new 41 0.0
+  let fb = float_arr_new 42 0.0
   let scr = float_arr_new 55641 0.0
   let m0 = 1.0 * mv_total_mass st m
   let _ = mv_step st ns btp m fb scr dt

@@ -13,32 +13,32 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
-## RUNNING NOW (2026-09-01 late)
+## RUNNING NOW (2026-09-01 late, overnight)
 
-Inlet-A fate pair segment 1 DONE (see notes/pion_chain_log.md
-"2026-09-01 late"): runaway GONE, dt steady, both massaudit gates PASS,
-inlet exact. Results saved as out/phase2_state_A_{nosink,sink}.csv,
-out/phase2_ckpt_A_{nosink,sink}.f32, out/phase2_A_{nosink,sink}.log.
+Three chains under /tmp/chain_dir.sh (see notes/pion_chain_log.md
+"Coulomb logarithm"):
+- `/tmp/run_A_sink_lnl` (binary /tmp/p2A_sink_lnl): ln(Lambda) eta +
+  wall sink. THE MODEL. 8 segments x 20k steps from the A_sink
+  segment-1 checkpoint. Step lines carry `V_arc=`.
+- `/tmp/run_A_sink`, `/tmp/run_A_nosink`: legacy-eta controls, 6 more
+  segments each (segment 2 was running at launch; the chain waits).
+Per dir: chain.log, run.log (current), run_segN.log, out/ckpt_segN.f32,
+out/state_segN.csv.
 
-Segment 2 of both is running from their checkpoints in the same dirs
-(/tmp/run_A_nosink, /tmp/run_A_sink; binaries /tmp/p2A_nosink,
-/tmp/p2A_sink; run.log = current segment, run_seg1.log = segment 1).
-Each segment is 20k steps, ~65 min wall, ~0.55 ms of physical time.
-Steady state needs a few more ms. When a segment ends: copy
-out/phase2_state.csv and out/phase2_ckpt.f32 into the repo with the
-_A_<variant> suffix, run /tmp/p2a_A in the working dir (massaudit
-gate), and relaunch the binary (it resumes from out/phase2_ckpt.f32,
-20000 steps compiled in). Plateau criterion: mass, mdot_out, ptip,
-pwall flat over a segment. Then alpha_map / attachment_map /
-render_fields / compare_bp_profile on the SINK checkpoint (the model).
+Morning routine: for each dir, `grep -E 'step (0|18000) ' run_seg*.log`
+to see mass / ptip / pwall / mdot_out / V_arc per segment; plateau =
+flat over a segment. Then on the lnl chain's latest checkpoint:
+massaudit gate (`/tmp/p2a_lnl` run in that dir), `STATE=... tools/
+attachment_map.py`, alpha_map, render_fields, compare_bp_profile; judge
+tip / wall / profile / thrust vs Cory and whether the current
+constricts onto the cathode tip. Copy the final state/ckpt into
+out/ with an _A_sink_lnl suffix.
 
-Assistant: worker restarted with the harness judge live (REL_TOL 0.01,
---rejudge mode). Adjudications in tools/assistant/LEDGER.md 20:45.
-Standing physics suspect from claim 001a: Spitzer ln(Lambda) ~1 in the
-solver, eta_ei 5-10x low. Owner call before touching it.
-
-GitHub: private repo zemo-g/mpd-attachment not yet created (no GitHub
-auth on Studio or Mini). Relay bare on Mini exists; hook not yet wired.
+Assistant: worker running with the harness judge live; 005 re-queued.
+GitHub: zemo-g/mpd-attachment private, Mini relay wired (prints
+`remote: [relay] refs/heads/main -> github OK` on push). Studio's
+/etc/hosts still pins api.github.com to a stale IP (gh unusable until
+`sudo sed -i '' '/api.github.com/d' /etc/hosts` in a real terminal).
 
 ## The next block
 
