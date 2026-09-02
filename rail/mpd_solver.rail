@@ -39,6 +39,10 @@
 gamma_m1 = 0.6666666666666667
 e_charge = 1.602176634e-19
 m_ion_ar = 6.633e-26
+-- cfl-sensitivity finding (2026-09-01, out/phase2_cfl15.log vs pf3):
+-- the 8 kA / 6 g/s runaway REVERSES at cfl 0.15 (doubled LxF numerical
+-- dissipation). No fate conclusion is valid at this scheme/resolution
+-- unless it is cfl-INVARIANT; see notes/pion_chain_log.md.
 cfl_c = 0.30
 -- eta bounds are NUMERIC only since the partially-ionized law
 -- (2026-09-01): the old 2e-5 "physical band" cap bound in 100% of cells
@@ -48,12 +52,35 @@ eta_cap = 1.0e-3
 eta_floor = 1.0e-7
 n_hall_floor = 1.0e19
 
+-- ── wall energy sink (2026-09-01, shipped AFTER the fate verdict) ──
+-- Adiabatic walls were the dominant omitted dissipation: conduction to
+-- cold electrodes/walls is 16x-160x total Ohmic across the kappa band
+-- [0.3, 3] W/m/K (tools/sink_estimate.py on the pf2 state). First cut
+-- is a constant effective conductivity so the band is bracketed by ONE
+-- constant; T-dependent kappa only if the verdict turns borderline.
+-- Per step and cell the removal is capped at half the thermal energy.
+-- fb slot 40 accumulates the Joules removed (the counter ships WITH
+-- the sink, not after it).
+kappa_wall = 1.0
+t_wall = 300.0
+
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
--- ghost-velocity cap: 2000 m/s clears nominal metering by 6.7x at
--- operating density while staying 150x under the ~3e5 m/s that
--- detonated the uncapped ghost on near-vacuum fluid
+-- ghost-velocity cap: 2000 m/s stays 150x under the ~3e5 m/s that
+-- detonated the uncapped ghost on near-vacuum fluid.
+-- The cap now engages ONLY in true near-vacuum (rho < in_vac_rho).
+-- 2026-09-01: gating it on the reflected MOMENTUM instead (cap =
+-- rho_fluid * in_vg_cap, always active) silently broke metering the
+-- moment the partially-ionized arc thinned the near-inlet gas: 19 of 29
+-- inlet cells clipped, 4.2e-3 kg/s delivered against a nominal 6.0e-3,
+-- for three whole segments. The old comment claimed the cap "disengages
+-- in the operating regime" - true at ideal-EOS density, false at 8.6e-4.
+-- Metering is now exact by construction at any operating density, and
+-- the vacuum guard still fires where it was actually needed.
+-- in_vac_rho = 0.1 * fill_rho: 10x below the prefill, 4x below the
+-- thinnest near-inlet gas the partially-ionized chain has reached.
 in_vg_cap = 2000.0
+in_vac_rho = 0.0002
 in_rho_ann = 0.014707
 in_rho_ring = 0.0064220
 kT_m = 62444.0
@@ -166,37 +193,225 @@ mv_speed st j i =
 -- ── fluxes ──
 -- fb is a single 20-float scratch: offsets 0 r-plus, 5 r-minus, 10 z-plus,
 -- 15 z-minus (one allocation per run; keeps loop arity <= 8 for TCO)
-mv_flux_r st scr j i fb off =
-  let rho = mp_get st mp_f_rho j i
-  let rho_safe = if rho < rho_floor then rho_floor else rho
-  let mr = mp_get st mp_f_mr j i
-  let mz = mp_get st mp_f_mz j i
-  let bt = mp_get st mp_f_bt j i
-  let e = mp_get st mp_f_en j i
-  let vr = mr / rho_safe
-  let p = float_arr_get scr (scr_parr + j * mp_nz + i)
-  let pt = p + 0.5 * bt * bt * inv_mu0
-  let _ = float_arr_set fb off mr
-  let _ = float_arr_set fb (off + 1) (mr * vr + pt)
-  let _ = float_arr_set fb (off + 2) (mz * vr)
-  let _ = float_arr_set fb (off + 3) ((e + pt) * vr)
-  float_arr_set fb (off + 4) (vr * bt)
+-- ── MUSCL face machinery (2026-09-01 second-order upgrade) ──
+-- Faces carry S = F(U_L) + F(U_R) (central sum) and d = U_R - U_L
+-- (dissipation jump). With zero slopes this is EXACTLY the old scheme:
+-- S degenerates to F_c + F_nb and d to U_nb - U_c. Reconstruction is
+-- piecewise-linear with minmod on rho, mr, mz, en, bt AND the cached p
+-- (p reconstructed directly so no EOS inversion happens per face).
+-- A face whose 4-cell stencil touches ANY non-fluid cell drops to first
+-- order, so every ghost cancellation property (metered inlet, mirrors,
+-- audit boundary fluxes) is preserved EXACTLY at boundaries.
+-- fb layout is now 40: S at 0/5/10/15 (r+ r- z+ z-), d at 20/25/30/35.
 
-mv_flux_z st scr j i fb off =
-  let rho = mp_get st mp_f_rho j i
-  let rho_safe = if rho < rho_floor then rho_floor else rho
-  let mr = mp_get st mp_f_mr j i
-  let mz = mp_get st mp_f_mz j i
-  let bt = mp_get st mp_f_bt j i
-  let e = mp_get st mp_f_en j i
-  let vz = mz / rho_safe
-  let p = float_arr_get scr (scr_parr + j * mp_nz + i)
+-- minmod: the most diffusive TVD limiter, deliberately - safety first.
+-- (Equivalence of the zero-slope refactor vs the pre-refactor binary
+-- was verified at 8.9e-12 over 200 steps before this went live.)
+mv_mm a b =
+  if a > 0.0 then
+    if b > 0.0 then if a < b then a else b else 0.0
+  else
+    if b < 0.0 then if a > b then a else b else 0.0
+
+mv_recl q0 q1 q2 =
+  let sl = 1.0 * mv_mm (q1 - q0) (q2 - q1)
+  q1 + 0.5 * sl
+
+mv_recr q1 q2 q3 =
+  let sl = 1.0 * mv_mm (q2 - q1) (q3 - q2)
+  q2 - 0.5 * sl
+
+mv_fb_zero5 fb off =
+  let _ = float_arr_set fb off 0.0
+  let _ = float_arr_set fb (off + 1) 0.0
+  let _ = float_arr_set fb (off + 2) 0.0
+  let _ = float_arr_set fb (off + 3) 0.0
+  float_arr_set fb (off + 4) 0.0
+
+mv_fr_add fb off rho mr mz en bt p =
+  let rs = if rho < rho_floor then rho_floor else rho
+  let vr = mr / rs
   let pt = p + 0.5 * bt * bt * inv_mu0
-  let _ = float_arr_set fb off mz
-  let _ = float_arr_set fb (off + 1) (mr * vz)
-  let _ = float_arr_set fb (off + 2) (mz * vz + pt)
-  let _ = float_arr_set fb (off + 3) ((e + pt) * vz)
-  float_arr_set fb (off + 4) (vz * bt)
+  let _ = float_arr_set fb off (float_arr_get fb off + mr)
+  let _ = float_arr_set fb (off + 1) (float_arr_get fb (off + 1) + mr * vr + pt)
+  let _ = float_arr_set fb (off + 2) (float_arr_get fb (off + 2) + mz * vr)
+  let _ = float_arr_set fb (off + 3) (float_arr_get fb (off + 3) + (en + pt) * vr)
+  float_arr_set fb (off + 4) (float_arr_get fb (off + 4) + vr * bt)
+
+mv_fz_add fb off rho mr mz en bt p =
+  let rs = if rho < rho_floor then rho_floor else rho
+  let vz = mz / rs
+  let pt = p + 0.5 * bt * bt * inv_mu0
+  let _ = float_arr_set fb off (float_arr_get fb off + mz)
+  let _ = float_arr_set fb (off + 1) (float_arr_get fb (off + 1) + mr * vz)
+  let _ = float_arr_set fb (off + 2) (float_arr_get fb (off + 2) + mz * vz + pt)
+  let _ = float_arr_set fb (off + 3) (float_arr_get fb (off + 3) + (en + pt) * vz)
+  float_arr_set fb (off + 4) (float_arr_get fb (off + 4) + vz * bt)
+
+-- first-order face between (j,i) and (j+1,i)
+mv_face_r1 st scr fb j i os od =
+  let rha = mp_get st mp_f_rho j i
+  let mra = mp_get st mp_f_mr j i
+  let mza = mp_get st mp_f_mz j i
+  let ena = mp_get st mp_f_en j i
+  let bta = mp_get st mp_f_bt j i
+  let pa = float_arr_get scr (scr_parr + j * mp_nz + i)
+  let rhb = mp_get st mp_f_rho (j + 1) i
+  let mrb = mp_get st mp_f_mr (j + 1) i
+  let mzb = mp_get st mp_f_mz (j + 1) i
+  let enb = mp_get st mp_f_en (j + 1) i
+  let btb = mp_get st mp_f_bt (j + 1) i
+  let pb = float_arr_get scr (scr_parr + (j + 1) * mp_nz + i)
+  let _ = mv_fb_zero5 fb os
+  let _ = mv_fr_add fb os rha mra mza ena bta pa
+  let _ = mv_fr_add fb os rhb mrb mzb enb btb pb
+  let _ = float_arr_set fb od (rhb - rha)
+  let _ = float_arr_set fb (od + 1) (mrb - mra)
+  let _ = float_arr_set fb (od + 2) (mzb - mza)
+  let _ = float_arr_set fb (od + 3) (enb - ena)
+  float_arr_set fb (od + 4) (btb - bta)
+
+-- reconstructed face between (j,i) and (j+1,i); stencil j-1..j+2 all fluid
+mv_face_r2 st scr fb j i os od =
+  let rh0 = mp_get st mp_f_rho (j - 1) i
+  let rh1 = mp_get st mp_f_rho j i
+  let rh2 = mp_get st mp_f_rho (j + 1) i
+  let rh3 = mp_get st mp_f_rho (j + 2) i
+  let mr0 = mp_get st mp_f_mr (j - 1) i
+  let mr1 = mp_get st mp_f_mr j i
+  let mr2 = mp_get st mp_f_mr (j + 1) i
+  let mr3 = mp_get st mp_f_mr (j + 2) i
+  let mz0 = mp_get st mp_f_mz (j - 1) i
+  let mz1 = mp_get st mp_f_mz j i
+  let mz2 = mp_get st mp_f_mz (j + 1) i
+  let mz3 = mp_get st mp_f_mz (j + 2) i
+  let en0 = mp_get st mp_f_en (j - 1) i
+  let en1 = mp_get st mp_f_en j i
+  let en2 = mp_get st mp_f_en (j + 1) i
+  let en3 = mp_get st mp_f_en (j + 2) i
+  let bt0 = mp_get st mp_f_bt (j - 1) i
+  let bt1 = mp_get st mp_f_bt j i
+  let bt2 = mp_get st mp_f_bt (j + 1) i
+  let bt3 = mp_get st mp_f_bt (j + 2) i
+  let pp0 = float_arr_get scr (scr_parr + (j - 1) * mp_nz + i)
+  let pp1 = float_arr_get scr (scr_parr + j * mp_nz + i)
+  let pp2 = float_arr_get scr (scr_parr + (j + 1) * mp_nz + i)
+  let pp3 = float_arr_get scr (scr_parr + (j + 2) * mp_nz + i)
+  let rhl = 1.0 * mv_recl rh0 rh1 rh2
+  let rhr = 1.0 * mv_recr rh1 rh2 rh3
+  let mrl = 1.0 * mv_recl mr0 mr1 mr2
+  let mrr = 1.0 * mv_recr mr1 mr2 mr3
+  let mzl = 1.0 * mv_recl mz0 mz1 mz2
+  let mzr = 1.0 * mv_recr mz1 mz2 mz3
+  let enl = 1.0 * mv_recl en0 en1 en2
+  let enr = 1.0 * mv_recr en1 en2 en3
+  let btl = 1.0 * mv_recl bt0 bt1 bt2
+  let btr = 1.0 * mv_recr bt1 bt2 bt3
+  let prl = 1.0 * mv_recl pp0 pp1 pp2
+  let prr = 1.0 * mv_recr pp1 pp2 pp3
+  let bad = if rhl < rho_floor then true else if rhr < rho_floor then true
+            else if prl < 0.000001 then true else if prr < 0.000001 then true
+            else false
+  if bad then mv_face_r1 st scr fb j i os od
+  else
+    let _ = mv_fb_zero5 fb os
+    let _ = mv_fr_add fb os rhl mrl mzl enl btl prl
+    let _ = mv_fr_add fb os rhr mrr mzr enr btr prr
+    let _ = float_arr_set fb od (rhr - rhl)
+    let _ = float_arr_set fb (od + 1) (mrr - mrl)
+    let _ = float_arr_set fb (od + 2) (mzr - mzl)
+    let _ = float_arr_set fb (od + 3) (enr - enl)
+    float_arr_set fb (od + 4) (btr - btl)
+
+mv_face_r st scr m fb j i os od =
+  let g0 = if j < 1 then 1 else arr_get m ((j - 1) * mp_nz + i)
+  let g1 = arr_get m (j * mp_nz + i)
+  let g2 = arr_get m ((j + 1) * mp_nz + i)
+  let g3 = if j + 2 >= mp_nr then 1 else arr_get m ((j + 2) * mp_nz + i)
+  let ok = if g0 == 0 then if g1 == 0 then if g2 == 0 then g3 == 0 else false else false else false
+  if ok then mv_face_r2 st scr fb j i os od else mv_face_r1 st scr fb j i os od
+
+-- z-direction twins: face between (j,i) and (j,i+1)
+mv_face_z1 st scr fb j i os od =
+  let rha = mp_get st mp_f_rho j i
+  let mra = mp_get st mp_f_mr j i
+  let mza = mp_get st mp_f_mz j i
+  let ena = mp_get st mp_f_en j i
+  let bta = mp_get st mp_f_bt j i
+  let pa = float_arr_get scr (scr_parr + j * mp_nz + i)
+  let rhb = mp_get st mp_f_rho j (i + 1)
+  let mrb = mp_get st mp_f_mr j (i + 1)
+  let mzb = mp_get st mp_f_mz j (i + 1)
+  let enb = mp_get st mp_f_en j (i + 1)
+  let btb = mp_get st mp_f_bt j (i + 1)
+  let pb = float_arr_get scr (scr_parr + j * mp_nz + i + 1)
+  let _ = mv_fb_zero5 fb os
+  let _ = mv_fz_add fb os rha mra mza ena bta pa
+  let _ = mv_fz_add fb os rhb mrb mzb enb btb pb
+  let _ = float_arr_set fb od (rhb - rha)
+  let _ = float_arr_set fb (od + 1) (mrb - mra)
+  let _ = float_arr_set fb (od + 2) (mzb - mza)
+  let _ = float_arr_set fb (od + 3) (enb - ena)
+  float_arr_set fb (od + 4) (btb - bta)
+
+mv_face_z2 st scr fb j i os od =
+  let rh0 = mp_get st mp_f_rho j (i - 1)
+  let rh1 = mp_get st mp_f_rho j i
+  let rh2 = mp_get st mp_f_rho j (i + 1)
+  let rh3 = mp_get st mp_f_rho j (i + 2)
+  let mr0 = mp_get st mp_f_mr j (i - 1)
+  let mr1 = mp_get st mp_f_mr j i
+  let mr2 = mp_get st mp_f_mr j (i + 1)
+  let mr3 = mp_get st mp_f_mr j (i + 2)
+  let mz0 = mp_get st mp_f_mz j (i - 1)
+  let mz1 = mp_get st mp_f_mz j i
+  let mz2 = mp_get st mp_f_mz j (i + 1)
+  let mz3 = mp_get st mp_f_mz j (i + 2)
+  let en0 = mp_get st mp_f_en j (i - 1)
+  let en1 = mp_get st mp_f_en j i
+  let en2 = mp_get st mp_f_en j (i + 1)
+  let en3 = mp_get st mp_f_en j (i + 2)
+  let bt0 = mp_get st mp_f_bt j (i - 1)
+  let bt1 = mp_get st mp_f_bt j i
+  let bt2 = mp_get st mp_f_bt j (i + 1)
+  let bt3 = mp_get st mp_f_bt j (i + 2)
+  let pp0 = float_arr_get scr (scr_parr + j * mp_nz + i - 1)
+  let pp1 = float_arr_get scr (scr_parr + j * mp_nz + i)
+  let pp2 = float_arr_get scr (scr_parr + j * mp_nz + i + 1)
+  let pp3 = float_arr_get scr (scr_parr + j * mp_nz + i + 2)
+  let rhl = 1.0 * mv_recl rh0 rh1 rh2
+  let rhr = 1.0 * mv_recr rh1 rh2 rh3
+  let mrl = 1.0 * mv_recl mr0 mr1 mr2
+  let mrr = 1.0 * mv_recr mr1 mr2 mr3
+  let mzl = 1.0 * mv_recl mz0 mz1 mz2
+  let mzr = 1.0 * mv_recr mz1 mz2 mz3
+  let enl = 1.0 * mv_recl en0 en1 en2
+  let enr = 1.0 * mv_recr en1 en2 en3
+  let btl = 1.0 * mv_recl bt0 bt1 bt2
+  let btr = 1.0 * mv_recr bt1 bt2 bt3
+  let prl = 1.0 * mv_recl pp0 pp1 pp2
+  let prr = 1.0 * mv_recr pp1 pp2 pp3
+  let bad = if rhl < rho_floor then true else if rhr < rho_floor then true
+            else if prl < 0.000001 then true else if prr < 0.000001 then true
+            else false
+  if bad then mv_face_z1 st scr fb j i os od
+  else
+    let _ = mv_fb_zero5 fb os
+    let _ = mv_fz_add fb os rhl mrl mzl enl btl prl
+    let _ = mv_fz_add fb os rhr mrr mzr enr btr prr
+    let _ = float_arr_set fb od (rhr - rhl)
+    let _ = float_arr_set fb (od + 1) (mrr - mrl)
+    let _ = float_arr_set fb (od + 2) (mzr - mzl)
+    let _ = float_arr_set fb (od + 3) (enr - enl)
+    float_arr_set fb (od + 4) (btr - btl)
+
+mv_face_z st scr m fb j i os od =
+  let g0 = if i < 1 then 1 else arr_get m (j * mp_nz + i - 1)
+  let g1 = arr_get m (j * mp_nz + i)
+  let g2 = arr_get m (j * mp_nz + i + 1)
+  let g3 = if i + 2 >= mp_nz then 1 else arr_get m (j * mp_nz + i + 2)
+  let ok = if g0 == 0 then if g1 == 0 then if g2 == 0 then g3 == 0 else false else false else false
+  if ok then mv_face_z2 st scr fb j i os od else mv_face_z1 st scr fb j i os od
 
 -- ── ghost fill for the full state ──
 -- gas: mirror with normal momentum negated (free slip). The ghost copies
@@ -252,7 +467,9 @@ mv_ghost_cell st btp m j i =
     let mzc = mp_get st mp_f_mz j 1
     let mzn = 2.0 * rho_in * in_v - mzc
     let cap = 1.0 * rho * in_vg_cap
-    let mzg = if mzn > cap then cap else if mzn < 0.0 - cap then 0.0 - cap else mzn
+    let mzv = if mzn > cap then cap else if mzn < 0.0 - cap then 0.0 - cap else mzn
+    let vac_r = 0.0 + in_vac_rho
+    let mzg = if rho < vac_r then mzv else mzn
     let ke = 0.5 * mzg * mzg / rho
     let me = 0.5 * btg * btg * inv_mu0
     let _ = mp_put st mp_f_rho j i rho
@@ -319,29 +536,26 @@ mv_apply_ghosts st btp m = mv_ghost_loop st btp m 0
 -- bt stays on the flat form: azimuthal induction is a flat 2D
 -- conservation law (dB/dt + d_r(vr B) + d_z(vz B) = 0) - do NOT weight.
 mv_lxf_field st ns cr cz fb j i f =
+  let srp = float_arr_get fb f
+  let srm = float_arr_get fb (5 + f)
+  let szp = float_arr_get fb (10 + f)
+  let szm = float_arr_get fb (15 + f)
+  let drp = float_arr_get fb (20 + f)
+  let drm = float_arr_get fb (25 + f)
+  let dzp = float_arr_get fb (30 + f)
+  let dzm = float_arr_get fb (35 + f)
+  let uc = mp_get st f j i
   if f == 4 then
-    let fa = (mp_get st f (j + 1) i + mp_get st f (j - 1) i + mp_get st f j (i + 1) + mp_get st f j (i - 1)) / 4.0
-    let dfr = float_arr_get fb f - float_arr_get fb (5 + f)
-    let dfz = float_arr_get fb (10 + f) - float_arr_get fb (15 + f)
-    float_arr_set ns (mp_idx f j i) (fa - cr * dfr - cz * dfz)
+    let fa = uc + (drp - drm + dzp - dzm) / 4.0
+    float_arr_set ns (mp_idx f j i) (fa - cr * (srp - srm) - cz * (szp - szm))
   else
     let r = mp_r_of j
     let rfp = r + 0.5 * mp_dr
     let rfm = r - 0.5 * mp_dr
-    let uc = mp_get st f j i
-    let un = mp_get st f (j + 1) i
-    let us = mp_get st f (j - 1) i
-    let ue = mp_get st f j (i + 1)
-    let uw = mp_get st f j (i - 1)
-    let fcr = float_arr_get fb (20 + f)
-    let fn = float_arr_get fb f
-    let fs = float_arr_get fb (5 + f)
-    let fe = float_arr_get fb (10 + f)
-    let fw = float_arr_get fb (15 + f)
-    let rdif = (rfp * (un - uc) + rfm * (us - uc)) / (4.0 * r)
-    let radv = cr * (rfp * (fcr + fn) - rfm * (fs + fcr)) / r
-    let zdif = (ue + uw - 2.0 * uc) / 4.0
-    let zadv = cz * (fe - fw)
+    let rdif = (rfp * drp - rfm * drm) / (4.0 * r)
+    let radv = cr * (rfp * srp - rfm * srm) / r
+    let zdif = (dzp - dzm) / 4.0
+    let zadv = cz * (szp - szm)
     float_arr_set ns (mp_idx f j i) (uc + rdif - radv + zdif - zadv)
 
 mv_lxf_apply st ns cr cz fb ji =
@@ -361,20 +575,19 @@ mv_geom_src st ns scr dt j i =
   let src = (p - 0.5 * bt * bt * inv_mu0) / r
   mp_put ns mp_f_mr j i (mp_get ns mp_f_mr j i + dt * src)
 
-mv_cell st ns cr cz fb scr ji =
+mv_cell st ns m cr cz fb scr ji =
   let j = ji / mp_nz
   let i = ji % mp_nz
-  let _ = mv_flux_r st scr (j + 1) i fb 0
-  let _ = mv_flux_r st scr (j - 1) i fb 5
-  let _ = mv_flux_z st scr j (i + 1) fb 10
-  let _ = mv_flux_z st scr j (i - 1) fb 15
-  let _ = mv_flux_r st scr j i fb 20
+  let _ = mv_face_r st scr m fb j i 0 20
+  let _ = mv_face_r st scr m fb (j - 1) i 5 25
+  let _ = mv_face_z st scr m fb j i 10 30
+  let _ = mv_face_z st scr m fb j (i - 1) 15 35
   mv_lxf_apply st ns cr cz fb ji
 
 mv_lxf_loop st ns m cr cz fb scr ji =
   if ji >= mp_nrnz then 0
   else
-    let _ = if arr_get m ji == 0 then mv_cell st ns cr cz fb scr ji else 0
+    let _ = if arr_get m ji == 0 then mv_cell st ns m cr cz fb scr ji else 0
     mv_lxf_loop st ns m cr cz fb scr (ji + 1)
 
 mv_geom_loop st ns m scr dt ji =
@@ -715,6 +928,50 @@ mv_heat_loop ns m scr dt ji =
     let _ = if arr_get m ji == 0 then mv_heat_cell ns scr dt (ji / mp_nz) (ji % mp_nz) else 0.0
     mv_heat_loop ns m scr dt (ji + 1)
 
+-- wall sink: cold-wall conduction for every fluid face whose neighbor
+-- is electrode or wall (masks 1/2/4/5; never inlet 6, outflow 7, axis 3).
+-- dE (energy DENSITY removed) = kappa_wall (T - t_wall) dt G, where G
+-- sums A_face / (V_cell dx/2): r-face 2 r_f / (r dr^2), z-face 2/dz^2.
+mv_wall_cell st m fb dt j i =
+  let kbase = j * mp_nz + i
+  let mrp = arr_get m (kbase + mp_nz)
+  let mrm = arr_get m (kbase - mp_nz)
+  let mzp = arr_get m (kbase + 1)
+  let mzm = arr_get m (kbase - 1)
+  let wrp = if mrp == 1 then 1 else if mrp == 2 then 1 else if mrp == 4 then 1 else if mrp == 5 then 1 else 0
+  let wrm = if mrm == 1 then 1 else if mrm == 2 then 1 else if mrm == 4 then 1 else if mrm == 5 then 1 else 0
+  let wzp = if mzp == 1 then 1 else if mzp == 2 then 1 else if mzp == 4 then 1 else if mzp == 5 then 1 else 0
+  let wzm = if mzm == 1 then 1 else if mzm == 2 then 1 else if mzm == 4 then 1 else if mzm == 5 then 1 else 0
+  if wrp + wrm + wzp + wzm == 0 then 0.0
+  else
+    let ei = 1.0 * mv_eint st j i
+    if ei < 0.000000001 then 0.0
+    else
+      let rho = mp_get st mp_f_rho j i
+      let rho_safe = if rho < rho_floor then rho_floor else rho
+      let n = rho_safe / m_ion_ar
+      let t = 1.0 * eos_temp n ei
+      if t <= t_wall then 0.0
+      else
+        let r = 1.0 * mp_r_of j
+        let gr = 2.0 / (r * mp_dr * mp_dr)
+        let gz = 2.0 / (mp_dz * mp_dz)
+        let g1 = to_float wrp * gr * (r + 0.5 * mp_dr)
+        let g2 = to_float wrm * gr * (r - 0.5 * mp_dr)
+        let g3 = to_float (wzp + wzm) * gz
+        let g = g1 + g2 + g3
+        let de_raw = kappa_wall * (t - t_wall) * dt * g
+        let de = if de_raw > 0.5 * ei then 0.5 * ei else de_raw
+        let _ = mp_put st mp_f_en j i (mp_get st mp_f_en j i - de)
+        let vol = mv_tau * r * mp_dr * mp_dz
+        float_arr_set fb 40 (float_arr_get fb 40 + de * vol)
+
+mv_wall_loop st m fb dt ji =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then mv_wall_cell st m fb dt (ji / mp_nz) (ji % mp_nz) else 0.0
+    mv_wall_loop st m fb dt (ji + 1)
+
 -- vacuum guard: state density floor + velocity cap (rescale momenta).
 -- The pinch evacuates the near-cathode region; without this the Alfven
 -- speed there collapses dt. facc[0] accumulates the mass ADDED by the
@@ -812,6 +1069,26 @@ mv_bmass_rate st m dt =
   let _ = mv_bmass_loop st m acc dt 0
   float_arr_get acc 0
 
+-- MEASURED inlet mass rate (kg/s INTO the domain) through the mask-6
+-- faces. Reuses mv_bmass_face verbatim for the z-face with di = -1, so
+-- it is the scheme's own flux by construction, not a second opinion.
+-- Ghosts must be applied first.
+-- Ships as a counter BEFORE the cap fix (2026-09-01): the runner prints
+-- this every period, so an inlet that stops metering can never again be
+-- read as nominal off a hardcoded "(in 0.006)".
+mv_inlet_loop st m acc dt j =
+  if j >= mp_nr then 0.0
+  else
+    let _ = if arr_get m (j * mp_nz) == 6 then
+        mv_bmass_face st m acc dt j 1 0 (0 - 1)
+      else 0.0
+    mv_inlet_loop st m acc dt (j + 1)
+
+mv_inlet_rate st m dt =
+  let acc = float_arr_new 1 0.0
+  let _ = mv_inlet_loop st m acc dt 0
+  float_arr_get acc 0
+
 -- ── one full step ──
 -- Order (Lie splitting): eta cache from step-start e_int (exact through
 -- the sweeps: field transport preserves e_int), implicit resistive
@@ -827,6 +1104,7 @@ mv_step st ns btp m fb scr dt =
   let _ = mv_zsweep st btp m scr dt 1
   let _ = mv_rsweep st btp m scr dt 1
   let _ = mv_heat_loop st m scr dt 0
+  let _ = mv_wall_loop st m fb dt 0
   let _ = mv_apply_ghosts st btp m
   let _ = mv_parr_loop st scr 0
   let cr = dt / (2.0 * mp_dr)

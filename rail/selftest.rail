@@ -19,6 +19,14 @@ run_hall = 0.0
 
 near v target tol = fabs (v - target) < tol
 
+-- set the near-inlet fluid row to a given density (selftest 33)
+st_set_inrow stx mm v j =
+  if j >= mp_nr then 0.0
+  else
+    let _ = if arr_get mm (j * mp_nz) == 6 then mp_put stx mp_f_rho j 1 v
+            else 0.0
+    st_set_inrow stx mm v (j + 1)
+
 check name ok fails =
   if ok then fails
   else
@@ -211,7 +219,7 @@ main =
   -- and the floor must not fire DURING that step.
   let stq = mv_init jt2
   let nsq0 = mv_init jt2
-  let fbq = float_arr_new 25 0.0
+  let fbq = float_arr_new 41 0.0
   let scrq = float_arr_new 55641 0.0
   let stw = mc_run stq nsq0 btp m fbq scrq 0.0 50
   let _ = mv_apply_ghosts stw btp m
@@ -259,11 +267,78 @@ main =
   let et31 = 1.0 * mv_eta_calc ste 60 50
   let f31 = check "eta fully-ionized limit = Spitzer 5.59e-6"
               (fabs (et31 / 0.000005590582 - 1.0) < 0.001) f30
-  if f31 == 0 then
-    let _ = print "SELFTEST PASS (31 checks)"
+  -- (32..33) metered-inlet guards (2026-09-01). The ghost-velocity cap
+  -- used to engage on the reflected MOMENTUM, so it silently clipped the
+  -- inlet whenever the near-inlet gas thinned: 19 of 29 inlet cells
+  -- clipped and 4.2e-3 kg/s delivered against a nominal 6.0e-3, for
+  -- three whole convergence segments, before the mass budget caught it.
+  -- The run's "(in 0.006)" was a hardcoded nominal, not a measurement.
+  -- 32 holds metering EXACT at operating density; 33 holds the vacuum
+  -- guard still firing where it was actually needed (cold start).
+  -- 0.00599999578365988 is the geometric nominal: the inlet area sum is
+  -- discretized, so it is not exactly 0.006 and must not be "fixed" to it.
+  let sti = mv_init jt2
+  let _ = mv_apply_ghosts sti btp m
+  let dti = 1.0 * mv_dt sti m
+  let ri = 1.0 * mv_inlet_rate sti m dti
+  let f32 = check "metered inlet exact at operating density"
+              (fabs (ri / 0.00599999578365988 - 1.0) < 0.000001) f31
+  -- drop the near-inlet gas 20x below in_vac_rho: the cap must re-engage
+  -- and starve the ghost, exactly as it does on a cold start
+  let vac = 0.0 + 0.00001
+  let _ = st_set_inrow sti m vac 0
+  let _ = mv_apply_ghosts sti btp m
+  let rv = 1.0 * mv_inlet_rate sti m dti
+  let f33 = check "vacuum guard still clips the inlet ghost"
+              (rv < 0.00006) f32
+  -- (34..35) MUSCL reconstruction guards (2026-09-01 second-order
+  -- upgrade). 34: on linear data the face states are EXACT midpoints
+  -- from both sides (second order in smooth regions). 35: at an
+  -- extremum minmod clips the slope to zero, reverting to first order
+  -- (TVD; no new extrema). Both are the properties the scheme's
+  -- stability and its selftest-26 telescoping rest on.
+  let l34a = 1.0 * mv_recl 1.0 3.0 5.0
+  let r34a = 1.0 * mv_recr 3.0 5.0 7.0
+  let f34 = check "minmod faces exact on linear data"
+              (if fabs (l34a - 4.0) < 0.000000000001
+               then fabs (r34a - 4.0) < 0.000000000001 else false) f33
+  let l35a = 1.0 * mv_recl 1.0 5.0 3.0
+  let r35a = 1.0 * mv_recr 5.0 1.0 3.0
+  let f35 = check "minmod clips at extrema (first order)"
+              (if fabs (l35a - 5.0) < 0.000000000001
+               then fabs (r35a - 1.0) < 0.000000000001 else false) f34
+  -- (36) wall sink: one application on a single hot cell adjacent to
+  -- the cathode (j=20, i=40; only its r- face touches solid) must
+  -- remove EXACTLY kappa_wall (T - t_wall) dt G with G = 2 r_f- /
+  -- (r dr^2), leave total mass untouched, and book the same Joules
+  -- (dE * cell volume) into the fb counter slot.
+  let st36 = mv_init jt2
+  let en0v = mp_get st36 mp_f_en 20 40
+  let ei0 = 1.0 * mv_eint st36 20 40
+  let eit = 0.0 + 8399.1649143
+  let _ = mp_put st36 mp_f_en 20 40 (en0v - ei0 + eit)
+  let m36a = 1.0 * mv_total_mass st36 m
+  let fb36 = float_arr_new 41 0.0
+  let dt36 = 0.0 + 1.0e-9
+  let _ = mv_wall_loop st36 m fb36 dt36 0
+  let m36b = 1.0 * mv_total_mass st36 m
+  let rho36 = mp_get st36 mp_f_rho 20 40
+  let t36 = 1.0 * eos_temp (rho36 / m_ion_ar) eit
+  let r36 = 1.0 * mp_r_of 20
+  let g36 = 2.0 * (r36 - 0.5 * mp_dr) / (r36 * mp_dr * mp_dr)
+  let de36 = kappa_wall * (t36 - t_wall) * dt36 * g36
+  let got36 = eit - 1.0 * mv_eint st36 20 40
+  let okde = fabs (got36 / de36 - 1.0) < 0.000000001
+  let okm36 = m36b == m36a
+  let vol36 = mv_tau * r36 * mp_dr * mp_dz
+  let okfb = fabs (float_arr_get fb36 40 / (de36 * vol36) - 1.0) < 0.000000001
+  let ok36 = if okde then if okm36 then okfb else false else false
+  let f36 = check "wall sink analytic rate, mass untouched" ok36 f35
+  if f36 == 0 then
+    let _ = print "SELFTEST PASS (36 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f31, " of 31)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f36, " of 36)"])
     1
 
 mc_run st ns btp m fb scr unused n =

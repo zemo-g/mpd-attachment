@@ -24,8 +24,8 @@ foreign time t
 
 run_hall = 0.0
 run_jtot = 8000.0
-run_nsteps = 20000
-print_every = 2000
+run_nsteps = 200
+print_every = 25
 -- 1.0 = resume from out/phase2_ckpt.f32 instead of cold init (chain
 -- segments toward steady state; t and step count restart at 0)
 run_resume = 1.0
