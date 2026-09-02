@@ -66,21 +66,18 @@ t_wall = 300.0
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
--- ghost-velocity cap: 2000 m/s stays 150x under the ~3e5 m/s that
--- detonated the uncapped ghost on near-vacuum fluid.
--- The cap now engages ONLY in true near-vacuum (rho < in_vac_rho).
--- 2026-09-01: gating it on the reflected MOMENTUM instead (cap =
--- rho_fluid * in_vg_cap, always active) silently broke metering the
--- moment the partially-ionized arc thinned the near-inlet gas: 19 of 29
--- inlet cells clipped, 4.2e-3 kg/s delivered against a nominal 6.0e-3,
--- for three whole segments. The old comment claimed the cap "disengages
--- in the operating regime" - true at ideal-EOS density, false at 8.6e-4.
--- Metering is now exact by construction at any operating density, and
--- the vacuum guard still fires where it was actually needed.
--- in_vac_rho = 0.1 * fill_rho: 10x below the prefill, 4x below the
--- thinnest near-inlet gas the partially-ionized chain has reached.
-in_vg_cap = 2000.0
-in_vac_rho = 0.0002
+-- The inlet face is a PRESCRIBED FLUX (2026-09-01, replacing the
+-- flux-metered ghost). A choked injector fed by a mass-flow controller
+-- delivers its mass flow independent of downstream pressure, so the
+-- face carries exactly rho_in v_in (mass), rho_in v_in^2 + p_in
+-- (momentum), (e_in + p_in) v_in (energy) in EVERY regime, vacuum
+-- included. The old ghost copied the fluid density and reflected the
+-- momentum around the nominal; its velocity cap, gated on near-vacuum
+-- fluid, still engaged in every second-order segment (half the inlet
+-- rows delivering 5% of nominal, mdot_in 6.0e-3 -> 2.87e-3) because the
+-- less-diffusive scheme evacuates the near-inlet region. See
+-- mv_face_zin. The mask-6 ghost is now a plain reservoir state (used
+-- only by the field sweeps and the bt boundary).
 in_rho_ann = 0.014707
 in_rho_ring = 0.0064220
 kT_m = 62444.0
@@ -405,13 +402,40 @@ mv_face_z2 st scr fb j i os od =
     let _ = float_arr_set fb (od + 3) (enr - enl)
     float_arr_set fb (od + 4) (btr - btl)
 
+-- prescribed inlet face: (j,i) is the mask-6 ghost, (j,i+1) the fluid
+-- cell. The gas part of S is 2 F_in and the gas jump is 0, so the
+-- update delivers exactly F_in dt/dz per step whatever the fluid state
+-- (selftest 33). The magnetic parts (bt^2/2mu0 in the momentum flux,
+-- bt^2/mu0 v in the energy flux, and the bt component itself) are kept
+-- from the ghost/fluid pair exactly as before, so the field boundary is
+-- unchanged.
+mv_face_zin st scr fb j i os od =
+  let _ = mv_face_z1 st scr fb j i os od
+  let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
+  let vin = 0.0 + in_v
+  let p_in = rho_in * kT_m
+  let e_in = rho_in * kT_m / gamma_m1 + 0.5 * rho_in * vin * vin
+  let bta = mp_get st mp_f_bt j i
+  let btb = mp_get st mp_f_bt j (i + 1)
+  let pm2 = 0.5 * inv_mu0 * (bta * bta + btb * btb)
+  let _ = float_arr_set fb os (2.0 * rho_in * vin)
+  let _ = float_arr_set fb (os + 1) 0.0
+  let _ = float_arr_set fb (os + 2) (2.0 * (rho_in * vin * vin + p_in) + pm2)
+  let _ = float_arr_set fb (os + 3) (2.0 * (e_in + p_in) * vin + 2.0 * pm2 * vin)
+  let _ = float_arr_set fb od 0.0
+  let _ = float_arr_set fb (od + 1) 0.0
+  let _ = float_arr_set fb (od + 2) 0.0
+  float_arr_set fb (od + 3) 0.0
+
 mv_face_z st scr m fb j i os od =
   let g0 = if i < 1 then 1 else arr_get m (j * mp_nz + i - 1)
   let g1 = arr_get m (j * mp_nz + i)
   let g2 = arr_get m (j * mp_nz + i + 1)
   let g3 = if i + 2 >= mp_nz then 1 else arr_get m (j * mp_nz + i + 2)
   let ok = if g0 == 0 then if g1 == 0 then if g2 == 0 then g3 == 0 else false else false else false
-  if ok then mv_face_z2 st scr fb j i os od else mv_face_z1 st scr fb j i os od
+  if ok then mv_face_z2 st scr fb j i os od
+  else if g1 == 6 then mv_face_zin st scr fb j i os od
+  else mv_face_z1 st scr fb j i os od
 
 -- ── ghost fill for the full state ──
 -- gas: mirror with normal momentum negated (free slip). The ghost copies
@@ -446,36 +470,18 @@ mv_ghost_cell st btp m j i =
     let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
     mv_ghost_gas st j i j 1 1.0 (0.0 - 1.0) btg
   else if mk == 6 then
-    -- inlet: FLUX-METERED gas ghost (mass audit 2026-08-31: the naive
-    -- rho/v Dirichlet ghost admitted 1.34x nominal - the LxF face flux
-    -- 0.5(F_c+F_g) - (dz/4dt)(rho_c-rho_g) adds the fluid-side momentum
-    -- average AND a rho-diffusion influx). Ghost rho copies the fluid
-    -- cell (kills the diffusive term); ghost mz reflects around the
-    -- nominal so the face average is EXACTLY rho_in v_in; en carries a
-    -- 300 K reservoir at the copied density.
-    -- The reflected momentum is CAPPED at |vz_ghost| <= in_vg_cap: with
-    -- near-vacuum fluid the uncapped ghost hits ~3e5 m/s (mz nominal
-    -- over a tiny copied rho) and detonates the row on cold start - and
-    -- mv_dt never sees ghost speeds. Physically a mass-flow controller
-    -- cannot force 6 g/s into vacuum; the cap is the choked
-    -- valve-opening transient, and it disengages in the operating
-    -- regime (vz_ghost ~ in_v there), where metering is exact.
+    -- inlet: reservoir ghost (rho_in, v_in, 300 K). NOT used for the gas
+    -- flux any more (mv_face_zin prescribes that face); it feeds the
+    -- resistive sweeps, the eta/p caches and the bt boundary only.
     let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
     let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j 1
-    let rho_c = mp_get st mp_f_rho j 1
-    let rho = if rho_c < rho_floor then rho_floor else rho_c
-    let mzc = mp_get st mp_f_mz j 1
-    let mzn = 2.0 * rho_in * in_v - mzc
-    let cap = 1.0 * rho * in_vg_cap
-    let mzv = if mzn > cap then cap else if mzn < 0.0 - cap then 0.0 - cap else mzn
-    let vac_r = 0.0 + in_vac_rho
-    let mzg = if rho < vac_r then mzv else mzn
-    let ke = 0.5 * mzg * mzg / rho
+    let mzg = rho_in * in_v
+    let ke = 0.5 * mzg * in_v
     let me = 0.5 * btg * btg * inv_mu0
-    let _ = mp_put st mp_f_rho j i rho
+    let _ = mp_put st mp_f_rho j i rho_in
     let _ = mp_put st mp_f_mr j i 0.0
     let _ = mp_put st mp_f_mz j i mzg
-    let _ = mp_put st mp_f_en j i (rho * kT_m / gamma_m1 + ke + me)
+    let _ = mp_put st mp_f_en j i (rho_in * kT_m / gamma_m1 + ke + me)
     mp_put st mp_f_bt j i btg
   else if mk == 7 then
     let btg = 0.0 - mp_get st mp_f_bt j mp_nzm2
@@ -1034,6 +1040,13 @@ mv_total_mass st m =
 mv_bmass_face st m acc dt j i dj di =
   let mk = arr_get m ((j + dj) * mp_nz + i + di)
   if mk == 0 then 0.0
+  else if mk == 6 then
+    -- prescribed inlet face (mv_face_zin): the scheme delivers exactly
+    -- rho_in v_in through it, no ghost term and no diffusive term
+    let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
+    let r = mp_r_of j
+    let rate = rho_in * in_v * mv_tau * r * mp_dr
+    float_arr_set acc 0 (float_arr_get acc 0 + rate)
   else
     let r = mp_r_of j
     let rc = mp_get st mp_f_rho j i
@@ -1096,7 +1109,7 @@ mv_inlet_rate st m dt =
 -- (exact for the whole hyperbolic phase), hyperbolic st -> ns
 -- (+ explicit Hall), floor. ns and scratch are caller-owned and reused
 -- (no per-step allocation; the caller double-buffers st <-> ns).
--- fb: 25-float flux scratch. scr: one 55641-float array carved by offset
+-- fb: 41-float flux scratch (see mv_lxf_field layout). scr: one 55641-float array carved by offset
 -- (er 0, ez +13780, parr +27560, fmass 41340, tridiagonal lanes
 -- 41341..41860, eta +41861).
 mv_step st ns btp m fb scr dt =

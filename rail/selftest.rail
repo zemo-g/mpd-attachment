@@ -267,30 +267,39 @@ main =
   let et31 = 1.0 * mv_eta_calc ste 60 50
   let f31 = check "eta fully-ionized limit = Spitzer 5.59e-6"
               (fabs (et31 / 0.000005590582 - 1.0) < 0.001) f30
-  -- (32..33) metered-inlet guards (2026-09-01). The ghost-velocity cap
-  -- used to engage on the reflected MOMENTUM, so it silently clipped the
-  -- inlet whenever the near-inlet gas thinned: 19 of 29 inlet cells
-  -- clipped and 4.2e-3 kg/s delivered against a nominal 6.0e-3, for
-  -- three whole convergence segments, before the mass budget caught it.
-  -- The run's "(in 0.006)" was a hardcoded nominal, not a measurement.
-  -- 32 holds metering EXACT at operating density; 33 holds the vacuum
-  -- guard still firing where it was actually needed (cold start).
-  -- 0.00599999578365988 is the geometric nominal: the inlet area sum is
-  -- discretized, so it is not exactly 0.006 and must not be "fixed" to it.
+  -- (32..33) inlet guards (2026-09-01). History: the metered ghost's
+  -- velocity cap engaged on the reflected MOMENTUM and silently clipped
+  -- 19 of 29 inlet rows for three segments; gating it on near-vacuum
+  -- fluid then engaged anyway in every second-order segment (half the
+  -- rows at 5% of nominal, mdot_in 6.0e-3 -> 2.87e-3), because the
+  -- less-diffusive scheme evacuates the near-inlet gas. The inlet is
+  -- now a PRESCRIBED-FLUX face (mv_face_zin): 32 holds the counter
+  -- exact at operating density; 33 holds the face the scheme actually
+  -- consumes exact on a VACUUM inlet cell (S = 2 rho_in v_in, jump 0),
+  -- and the counter agreeing. 0.00599999578365988 is the geometric
+  -- nominal: the inlet area sum is discretized, so it is not exactly
+  -- 0.006 and must not be "fixed" to it.
   let sti = mv_init jt2
   let _ = mv_apply_ghosts sti btp m
   let dti = 1.0 * mv_dt sti m
   let ri = 1.0 * mv_inlet_rate sti m dti
   let f32 = check "metered inlet exact at operating density"
               (fabs (ri / 0.00599999578365988 - 1.0) < 0.000001) f31
-  -- drop the near-inlet gas 20x below in_vac_rho: the cap must re-engage
-  -- and starve the ghost, exactly as it does on a cold start
+  -- drop the near-inlet gas to 1e-5 kg/m^3 (50x below the old vacuum
+  -- gate): the prescribed face must still deliver exactly nominal
   let vac = 0.0 + 0.00001
   let _ = st_set_inrow sti m vac 0
   let _ = mv_apply_ghosts sti btp m
+  let _ = mv_parr_loop sti scrq 0
+  let _ = mv_face_z sti scrq m fbq 25 0 15 35
+  let s33 = float_arr_get fbq 15
+  let d33 = float_arr_get fbq 35
   let rv = 1.0 * mv_inlet_rate sti m dti
-  let f33 = check "vacuum guard still clips the inlet ghost"
-              (rv < 0.00006) f32
+  let f33 = check "prescribed inlet face exact on vacuum cell"
+              (if fabs (s33 / 8.8242 - 1.0) < 0.000000000001
+               then if d33 == 0.0
+               then fabs (rv / 0.00599999578365988 - 1.0) < 0.000001
+               else false else false) f32
   -- (34..35) MUSCL reconstruction guards (2026-09-01 second-order
   -- upgrade). 34: on linear data the face states are EXACT midpoints
   -- from both sides (second order in smooth regions). 35: at an

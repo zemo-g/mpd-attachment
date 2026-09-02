@@ -27,6 +27,13 @@ two_pi = 6.283185307179586
 ma_face st m acc dt j i dj di =
   let mk = arr_get m ((j + dj) * mp_nz + i + di)
   if mk == 0 then 0.0
+  else if mk == 6 then
+    -- prescribed inlet face (mv_face_zin, 2026-09-01): the scheme carries
+    -- exactly rho_in v_in, no ghost average and no diffusive term
+    let rho_in = if j <= mp_j_in1b then in_rho_ann else in_rho_ring
+    let r = mp_r_of j
+    let rate = rho_in * in_v * two_pi * r * mp_dr
+    float_arr_set acc mk (float_arr_get acc mk + rate)
   else
     let r = mp_r_of j
     let rc = mp_get st mp_f_rho j i
@@ -83,4 +90,21 @@ main =
   let net2 = float_arr_get acc 4 + float_arr_get acc 5 + float_arr_get acc 6
   let net = net1 + net2 + float_arr_get acc 7
   let _ = print (cat ["  net d(mass)/dt = ", show_float net, " kg/s"])
+  -- self-check: the family sum is a COPY of the scheme's face rules, so
+  -- it can drift from the scheme (it did when the inlet face changed).
+  -- Take one real mv_step and compare the observed dm/dt with the net;
+  -- floor mass (scr_fmass) is booked separately.
+  let ns = float_arr_new mp_state 0.0
+  let fb = float_arr_new 41 0.0
+  let scr = float_arr_new 55641 0.0
+  let m0 = 1.0 * mv_total_mass st m
+  let _ = mv_step st ns btp m fb scr dt
+  let m1 = 1.0 * mv_total_mass ns m
+  let obs = (m1 - m0) / dt
+  let flr = float_arr_get scr scr_fmass / dt
+  let _ = print (cat ["  observed one-step d(mass)/dt = ", show_float obs,
+                      " kg/s (of which floor-added ", show_float flr, ")"])
+  let rel = fabs (obs - flr - net) / fabs net
+  let _ = print (cat ["  |observed - floor - net| / |net| = ", show_float rel,
+                      if rel < 0.001 then "  GATE PASS" else "  GATE FAIL"])
   0
