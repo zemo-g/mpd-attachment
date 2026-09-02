@@ -55,6 +55,36 @@ def ask(messages, model):
         return (msg.get("content") or "") + "\n" + (msg.get("reasoning") or "")
 
 
+REL_TOL = float(os.environ.get("RA_REL_TOL", "0.01"))
+CHECK_RE = re.compile(r"^CHECK (?P<name>[^:]+): computed=(?P<c>[^ ]+) claimed=(?P<k>[^ ]+) -> ?(?P<v>PASS|FAIL)\s*$", re.M)
+
+
+def judge(output):
+    """The harness owns the comparison. Models compared with exact
+    equality (558.747 vs 558.7 -> FAIL), divided by a claimed 0.0, or
+    reused one claimed value across cases; their PASS/FAIL token is
+    advisory. Re-judge every CHECK line: PASS if |c - k| <= REL_TOL *
+    max(|k|, 1e-300) or both are below 1e-12 in magnitude. Unparseable
+    numbers keep the model's token. A harness failure voids all."""
+    if "CHECK harness:" in output:
+        return 0, len(CHECK_RE.findall(output)), output
+    passes = fails = 0
+    lines = []
+    for line in output.splitlines():
+        m = CHECK_RE.match(line)
+        if not m:
+            lines.append(line); continue
+        try:
+            c, k = float(m["c"]), float(m["k"])
+            ok = (abs(c) < 1e-12 and abs(k) < 1e-12) or abs(c - k) <= REL_TOL * max(abs(k), 1e-300)
+        except ValueError:
+            ok = m["v"] == "PASS"
+        tag = "PASS" if ok else "FAIL"
+        passes += ok; fails += (not ok)
+        lines.append(line + ("" if tag == m["v"] else f"   (harness: {tag})"))
+    return passes, fails, "\n".join(lines)
+
+
 def run_block(code):
     with tempfile.TemporaryDirectory() as td:
         f = os.path.join(td, "check.py")
@@ -125,11 +155,8 @@ def run_model(claim_path, model):
                       "\nRepair it. Same output format."}]
             continue
         break
-    # verdict lines only: a whole stdout line "CHECK <name>: ... -> PASS"
-    fails = len(re.findall(r"^CHECK .*-> ?FAIL\s*$", output, re.M))
-    passes = len(re.findall(r"^CHECK .*-> ?PASS\s*$", output, re.M))
-    if "CHECK harness:" in output:
-        passes = 0
+    passes, fails, output = judge(output)
+    transcript += "\n\n--- harness-judged ---\n" + output
     if passes and not fails:
         status = "CONFIRMED"
     elif fails:
@@ -158,7 +185,27 @@ def sweep():
         process(c)
 
 
+def rejudge():
+    vd = os.path.join(HERE, "verdicts")
+    for f in sorted(os.listdir(vd)):
+        if not f.endswith(".md"):
+            continue
+        t = open(os.path.join(vd, f)).read()
+        outs = re.findall(r"--- executed output ---\n(.*?)(?=\n--- |\n=== |\Z)", t, re.S)
+        if not outs:
+            continue
+        passes, fails, judged = judge(outs[-1])
+        status = "CONFIRMED" if passes and not fails else ("REFUTED" if fails else "CHECK-ERROR")
+        old = t.split("\n", 1)[0]
+        print(f"{f:40s} {old[:24]:24s} -> {status} ({passes}P/{fails}F)")
+        for l in judged.splitlines():
+            if "(harness:" in l:
+                print("    " + l)
+
+
 if __name__ == "__main__":
+    if "--rejudge" in sys.argv:
+        rejudge(); sys.exit(0)
     if "--claim" in sys.argv:
         n = sys.argv[sys.argv.index("--claim") + 1]
         for f in os.listdir(os.path.join(HERE, "claims")):

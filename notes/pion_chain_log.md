@@ -623,3 +623,45 @@ Assistant claims 001b..001f queued ahead of the rest: choked-inlet
 physics, Dirichlet-ghost over-delivery (why B was rejected),
 prescribed-face exactness, inlet-row nominal geometry, and the ghost
 momentum artefact numbers.
+
+### 2026-09-01 late: fate pair with inlet A finished 20k steps. RUNAWAY GONE.
+
+Both segments resumed from pf2, cfl 0.30, 20000 steps, ~4300 s / 3750 s wall.
+Both massaudit gates PASS (nosink 1.1e-10, sink 3.0e-11), mdot_in exact
+(0.00599999578365988) at every print in both runs.
+
+| run    | step  | dt      | mass    | sig vmax | ptip | pwall | mdot_out | P_wall |
+|--------|-------|---------|---------|----------|------|-------|----------|--------|
+| nosink | 0     | 2.4e-8  | 1.87e-6 | 6200     | 2685 | 1423  | 7.7e-3   | 0      |
+| nosink | 18000 | 2.80e-8 | 2.31e-6 | 5352     | 2437 | 2055  | 5.22e-3  | 0      |
+| sink   | 18000 | 2.95e-8 | 3.25e-6 | 5088     | 1654 | 425   | 2.68e-3  | 89.7kW |
+
+End-of-segment probes: nosink tip 2430 Pa (Cory 2104), wall 2074 (Cory
+465), backplate-at-cathode 5848. sink tip 1722 (Cory 2104), wall 448
+(Cory 465), backplate-at-cathode 68.
+
+Notes:
+- The logged "vmax" is mv_speed = |v| + fast magnetosonic speed, i.e.
+  a SIGNAL speed. Flow speed from the state csv: sink max |v| 2440 m/s
+  at j=22 i=73 (r 10.75 mm, z 90.6 mm, interior near the tip), nosink
+  1965 m/s. Neither lives in the inlet rows (i 0..1) any more. The
+  old ghost put 2.5e4 m/s there.
+- dt is STEADY (2.80e-8 and 2.95e-8, drifting up not down) across the
+  full 20k steps in both runs. Every earlier "dt collapse" verdict was
+  the inlet-momentum artefact.
+- Neither run is at steady state: mass still rising (nosink +0.04e-6
+  per 2k steps, sink +0.17e-6 per 2k steps), mdot_out well below the
+  6e-3 inlet. Fill time mass/(in - out): nosink ~3 ms, sink ~1.2 ms per
+  e-fold; segment 1 covered 0.5 ms. Chaining continues (segment 2
+  launched from each checkpoint in the same working dirs;
+  run_seg1.log kept beside run.log).
+- Sink wall pressure 448 Pa vs Cory 465 is the first probe in the
+  program that lands on Cory without tuning. Tip 1722 vs 2104 is 18%
+  low and still rising slowly. The nosink wall is 4.5x Cory: the cold
+  wall matters at the backplate, as suspected since the wall-sink
+  entry.
+- Open suspect promoted by the assistant (claim 001a): the Spitzer
+  coefficient in the solver implies ln(Lambda) = 0.96; physical is
+  5-10 at these n_e, T. eta_ei is therefore 5-10x low. This is the
+  best candidate for the too-quiet arc (V_arc ~5 V). Solver change,
+  owner's greenlight needed; gates before/after.

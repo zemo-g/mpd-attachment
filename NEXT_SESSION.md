@@ -13,35 +13,32 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
-## RUNNING NOW (2026-09-01 evening)
+## RUNNING NOW (2026-09-01 late)
 
-Two fate segments with the PRESCRIBED-FLUX inlet (approach A, see
-`notes/pion_chain_log.md` "REVIEW 2026-09-01 evening"), both resumed
-from `out/phase2_ckpt_pf2_honest6g.f32`, cfl 0.30, 20k steps, each in
-its own working dir so their `out/` do not collide:
+Inlet-A fate pair segment 1 DONE (see notes/pion_chain_log.md
+"2026-09-01 late"): runaway GONE, dt steady, both massaudit gates PASS,
+inlet exact. Results saved as out/phase2_state_A_{nosink,sink}.csv,
+out/phase2_ckpt_A_{nosink,sink}.f32, out/phase2_A_{nosink,sink}.log.
 
-- `/tmp/run_A_nosink/run.log` (binary `/tmp/p2A_nosink`, kappa_wall 0):
-  does the vmax runaway survive once the inlet momentum artefact is
-  gone? This is the clean model-physics question.
-- `/tmp/run_A_sink/run.log` (binary `/tmp/p2A_sink`, kappa_wall 1): the
-  wall-sink test, uncontaminated.
+Segment 2 of both is running from their checkpoints in the same dirs
+(/tmp/run_A_nosink, /tmp/run_A_sink; binaries /tmp/p2A_nosink,
+/tmp/p2A_sink; run.log = current segment, run_seg1.log = segment 1).
+Each segment is 20k steps, ~65 min wall, ~0.55 ms of physical time.
+Steady state needs a few more ms. When a segment ends: copy
+out/phase2_state.csv and out/phase2_ckpt.f32 into the repo with the
+_A_<variant> suffix, run /tmp/p2a_A in the working dir (massaudit
+gate), and relaunch the binary (it resumes from out/phase2_ckpt.f32,
+20000 steps compiled in). Plateau criterion: mass, mdot_out, ptip,
+pwall flat over a segment. Then alpha_map / attachment_map /
+render_fields / compare_bp_profile on the SINK checkpoint (the model).
 
-At completion each writes `out/phase2_state.csv` and `out/phase2_ckpt.f32`
-INSIDE its run dir; copy them to the repo as
-`out/phase2_state_A_{nosink,sink}.csv`, `out/phase2_ckpt_A_{nosink,sink}.f32`.
-Judge: where vmax lives (interior vs inlet row; the review script in
-the chain log), mdot_in exact throughout, drain, and nosink vs sink
-envelope statistics. Then chain whichever is the model (sink on).
+Assistant: worker restarted with the harness judge live (REL_TOL 0.01,
+--rejudge mode). Adjudications in tools/assistant/LEDGER.md 20:45.
+Standing physics suspect from claim 001a: Spitzer ln(Lambda) ~1 in the
+solver, eta_ei 5-10x low. Owner call before touching it.
 
-Every previous "runaway" verdict (pf pair, m2 pair) is CONTAMINATED by
-the old ghost's 1/rho_c momentum injection. Do not cite them as
-physics. ws30 was killed while detonating (`out/phase2_ws30_confounded.log`).
-
-Research assistant: `tools/assistant/ra_worker.py --loop` on
-`127.0.0.1:8095` (own mlx server, PID in `/tmp/ra_mlx_server.log`),
-claims 001a..001f queued ahead; verdicts land in
-`tools/assistant/verdicts/` and `LEDGER.md`. Adjudicate REFUTED ones in
-writing.
+GitHub: private repo zemo-g/mpd-attachment not yet created (no GitHub
+auth on Studio or Mini). Relay bare on Mini exists; hook not yet wired.
 
 ## The next block
 
