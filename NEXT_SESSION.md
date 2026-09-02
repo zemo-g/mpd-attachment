@@ -13,30 +13,30 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
-## RUNNING NOW (2026-09-01 late, overnight)
+## RUNNING NOW (2026-09-02 09:43, kappa(T) sink)
 
-Three chains under /tmp/chain_dir.sh (see notes/pion_chain_log.md
-"Coulomb logarithm"):
-- `/tmp/run_A_sink_lnl` (binary /tmp/p2A_sink_lnl): ln(Lambda) eta +
-  wall sink. THE MODEL. 8 segments x 20k steps from the A_sink
-  segment-1 checkpoint. Step lines carry `V_arc=`.
-- `/tmp/run_A_sink`, `/tmp/run_A_nosink`: legacy-eta controls, 6 more
-  segments each (segment 2 was running at launch; the chain waits).
+Overnight verdict is in notes/pion_chain_log.md "2026-09-02 morning":
+the nosink control plateaued (judged there); both constant-kappa sink
+chains filled without limit (P_wall reached 90% of P_ohm). The sink is
+now `wall_kappa` (T and alpha dependent, selftest 38). Two chains under
+/tmp/chain_dir.sh, binary /tmp/p2A_sink_kT, 8 segments x 20k steps:
+- `/tmp/run_kT_fromA`: from the nosink plateau. THE MODEL.
+- `/tmp/run_kT_fromfill`: from the filled sink_lnl state. Drain test.
 Per dir: chain.log, run.log (current), run_segN.log, out/ckpt_segN.f32,
-out/state_segN.csv.
+out/state_segN.csv. Step lines carry P_wall and V_arc.
 
-Morning routine: for each dir, `grep -E 'step (0|18000) ' run_seg*.log`
-to see mass / ptip / pwall / mdot_out / V_arc per segment; plateau =
-flat over a segment. Then on the lnl chain's latest checkpoint:
-massaudit gate (`/tmp/p2a_lnl` run in that dir), `STATE=... tools/
-attachment_map.py`, alpha_map, render_fields, compare_bp_profile; judge
-tip / wall / profile / thrust vs Cory and whether the current
-constricts onto the cathode tip. Copy the final state/ckpt into
-out/ with an _A_sink_lnl suffix.
+Judgment when they finish: (1) fromA must plateau with P_wall a sane
+fraction of P_ohm (Cory-class devices lose a fraction, not 90%) and
+mdot_out ~ 6e-3; (2) fromfill must LOSE mass. If fromA still fills,
+the next physical bound is the sheath heat-transmission limit
+q <= gamma n_e c_s k T_e (gamma ~ 5-7) as a min() on the wall flux, not
+another constant. Then on the fromA checkpoint: massaudit
+(/tmp/p2a_kT), STATE= attachment_map, alpha_map, render_fields,
+compare_bp_profile; copy state/ckpt into out/ as *_A_kT_seg8.*.
 
-Assistant: worker running with the harness judge live; 005 re-queued.
-GitHub: zemo-g/mpd-attachment private, Mini relay wired (prints
-`remote: [relay] refs/heads/main -> github OK` on push). Studio's
+Assistant: 002a/005 CHECK-ERROR (their sandbox has no np.trapz; re-queue
+with a hint to use np.trapezoid); 002b adjudicated by hand.
+GitHub: zemo-g/mpd-attachment private, Mini relay wired. Studio's
 /etc/hosts still pins api.github.com to a stale IP (gh unusable until
 `sudo sed -i '' '/api.github.com/d' /etc/hosts` in a real terminal).
 

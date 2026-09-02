@@ -6,13 +6,13 @@ Usage:
   ra_worker.py --loop          poll claims/ every 5 min, forever
   ra_worker.py --claim NNN     process one claim
 
-Env: RA_URL   (default http://10.42.0.2:8082/v1)
+Env: RA_URL   (default http://127.0.0.1:8095/v1, the Studio mlx server)
      RA_MODEL (default Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq)
 """
 import json, os, re, subprocess, sys, tempfile, time, urllib.request
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-URL = os.environ.get("RA_URL", "http://10.42.0.2:8082/v1")
+URL = os.environ.get("RA_URL", "http://127.0.0.1:8095/v1")
 MODEL = os.environ.get("RA_MODEL", "Qwen3.5-122B-A10B-heretic-v2-2.34bit-msq")
 # two tiers: the fast model answers first; anything not CONFIRMED is
 # escalated to the strong model (thinking models burn 10 min and can
@@ -64,7 +64,8 @@ def judge(output):
     equality (558.747 vs 558.7 -> FAIL), divided by a claimed 0.0, or
     reused one claimed value across cases; their PASS/FAIL token is
     advisory. Re-judge every CHECK line: PASS if |c - k| <= REL_TOL *
-    max(|k|, 1e-300) or both are below 1e-12 in magnitude. Unparseable
+    max(|k|, |c|), or both exactly zero (SI numbers live at 1e-20 and
+    1e-23; an absolute floor is a false PASS). Unparseable
     numbers keep the model's token. A harness failure voids all."""
     if "CHECK harness:" in output:
         return 0, len(CHECK_RE.findall(output)), output
@@ -76,7 +77,9 @@ def judge(output):
             lines.append(line); continue
         try:
             c, k = float(m["c"]), float(m["k"])
-            ok = (abs(c) < 1e-12 and abs(k) < 1e-12) or abs(c - k) <= REL_TOL * max(abs(k), 1e-300)
+            # relative only: an absolute "both ~0" shortcut passed a 31%
+            # miss on 1e-20 m^2 cross-sections (002a, 2026-09-02).
+            ok = (c == 0.0 and k == 0.0) or abs(c - k) <= REL_TOL * max(abs(k), abs(c))
         except ValueError:
             ok = m["v"] == "PASS"
         tag = "PASS" if ok else "FAIL"

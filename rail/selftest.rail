@@ -324,7 +324,7 @@ main =
                then fabs (r35a - 1.0) < 0.000000000001 else false) f34
   -- (36) wall sink: one application on a single hot cell adjacent to
   -- the cathode (j=20, i=40; only its r- face touches solid) must
-  -- remove EXACTLY kappa_wall (T - t_wall) dt G with G = 2 r_f- /
+  -- remove EXACTLY wall_kappa (T - t_wall) dt G with G = 2 r_f- /
   -- (r dr^2), leave total mass untouched, and book the same Joules
   -- (dE * cell volume) into the fb counter slot.
   let st36 = mv_init jt2
@@ -341,7 +341,9 @@ main =
   let t36 = 1.0 * eos_temp (rho36 / m_ion_ar) eit
   let r36 = 1.0 * mp_r_of 20
   let g36 = 2.0 * (r36 - 0.5 * mp_dr) / (r36 * mp_dr * mp_dr)
-  let de36 = kappa_wall * (t36 - t_wall) * dt36 * g36
+  let a36 = 1.0 * eos_alpha (rho36 / m_ion_ar) t36
+  let k36 = 1.0 * wall_kappa (rho36 / m_ion_ar) a36 t36
+  let de36 = k36 * (t36 - t_wall) * dt36 * g36
   let got36 = eit - 1.0 * mv_eint st36 20 40
   let okde = fabs (got36 / de36 - 1.0) < 0.000000001
   let okm36 = m36b == m36a
@@ -372,11 +374,24 @@ main =
   let oken37 = fabs ((en37b - en37a) / (dt37 * eta37 * jz37 * jz37) - 1.0) < 0.000000001
   let ok37 = if okfb37 then oken37 else false
   let f37 = check "Ohmic counter books dt eta j^2 V_fluid" ok37 f36
-  if f37 == 0 then
-    let _ = print "SELFTEST PASS (37 checks)"
+  -- (38) wall conductivity self-limits (2026-09-02, the constant
+  -- kappa_wall = 1 fell to the overnight fill). References computed
+  -- independently in Python (tools/assistant/claims/003-wall-kappa.md):
+  -- n = 1e22, 800 K is neutral, 0.0177 (800/300)^0.7 = 0.0351683003;
+  -- n = 1e22, 15000 K is alpha 0.9655, ln(Lambda) 4.98, kappa_e 1.019,
+  -- mixture 0.99349970. A constant 1 W/m/K sink at 800 K fails this
+  -- 28x. Both references at 1e-6 / 1e-3 rel.
+  let kc38 = 1.0 * wall_kappa 1.0e22 0.0 800.0
+  let ah38 = 1.0 * eos_alpha 1.0e22 15000.0
+  let kh38 = 1.0 * wall_kappa 1.0e22 ah38 15000.0
+  let ok38 = if fabs (kc38 / 0.0351683003 - 1.0) < 0.000001
+             then fabs (kh38 / 0.99349970 - 1.0) < 0.001 else false
+  let f38 = check "wall kappa self-limits (neutral 800 K, Spitzer 15 kK)" ok38 f37
+  if f38 == 0 then
+    let _ = print "SELFTEST PASS (38 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f37, " of 37)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f38, " of 38)"])
     1
 
 st37_fill stx c ji =

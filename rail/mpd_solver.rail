@@ -61,8 +61,40 @@ n_hall_floor = 1.0e19
 -- Per step and cell the removal is capped at half the thermal energy.
 -- fb slot 40 accumulates the Joules removed (the counter ships WITH
 -- the sink, not after it).
-kappa_wall = 1.0
+-- 2026-09-02: the constant kappa_wall = 1 fell (overnight chains
+-- 2026-09-01: P_wall reached 90% of P_ohm, a 45x-dense sheet at 760 K
+-- along the wall, exit vz 803 -> 77 m/s, mdot_out negative). A
+-- constant 1 W/m/K over a half cell is h ~ 4000 W/m^2/K with nothing
+-- to bound it but cooling the gas to the wall. The conductivity is now
+-- the cell's own (wall_kappa): neutral argon 0.0177 (T/300)^0.7
+-- (fit to 300-5000 K tabulated argon, within 5%) weighted (1 - alpha),
+-- plus Spitzer electron conduction 3.2 n_e k^2 T tau_e / m_e (NRL
+-- tau_e, same ln(Lambda) as eta) weighted alpha. The cold sheet chokes
+-- its own sink ~30x; a 2 eV fully ionized cell still sees ~1.5 W/m/K.
+kappa_n300 = 0.0177
 t_wall = 300.0
+
+-- Coulomb logarithm, NRL form for T_e < 10 eV, n_e in cm^-3, clipped to
+-- [2, 20]; shared by eta and wall_kappa so the two never drift apart.
+eos_lnl n a t =
+  let t_eV = t / 11604.518
+  let t_c = if t_eV < 0.1 then 0.1 else t_eV
+  let ne_cm3 = a * n * 0.000001
+  let ne_c = if ne_cm3 < 1.0 then 1.0 else ne_cm3
+  let lnl_raw = 23.0 - 0.5 * log ne_c + 1.5 * log t_c
+  if lnl_raw < 2.0 then 2.0 else if lnl_raw > 20.0 then 20.0 else lnl_raw
+
+-- thermal conductivity of the cell gas, W/m/K (see the wall-sink note)
+--   kappa_e = 3.2 k^2 T (n_e tau_e) / m_e,  n_e tau_e = 3.44e11 T_eV^1.5 / lnL
+--           = 2.30349e-4 T_K T_eV^1.5 / lnL
+wall_kappa n a t =
+  let kn = 0.0177 * exp (0.7 * log (t / 300.0))
+  if a <= 0.0 then kn
+  else
+    let lnl = 1.0 * eos_lnl n a t
+    let t_eV = t / 11604.518
+    let ke = 0.000230348819 * t * t_eV * sqrt t_eV / lnl
+    (1.0 - a) * kn + a * ke
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
@@ -648,15 +680,10 @@ mv_eta_calc st j i =
   -- Coulomb logarithm (greenlit 2026-09-01 late): the old coefficient
   -- 5.0e-5 was Spitzer 5.2e-5 ln(Lambda) with ln(Lambda) = 0.96, i.e.
   -- the arc 4-5x too conductive in its current-carrying cells (NRL
-  -- gives 5-6 there). NRL form for T_e < 10 eV, n_e in cm^-3:
-  --   ln(Lambda) = 23 - ln(sqrt(n_e) / T_eV^1.5), clipped to [2, 20]
-  -- n_e = alpha n from the same Saha inversion; the alpha floor makes
-  -- n_e tiny in cold gas, where the clip at 20 bounds it and eta_en
-  -- dominates anyway.
-  let ne_cm3 = a * n * 0.000001
-  let ne_c = if ne_cm3 < 1.0 then 1.0 else ne_cm3
-  let lnl_raw = 23.0 - 0.5 * log ne_c + 1.5 * log t_c
-  let lnl = if lnl_raw < 2.0 then 2.0 else if lnl_raw > 20.0 then 20.0 else lnl_raw
+  -- gives 5-6 there). eos_lnl carries the NRL form; n_e = alpha n from
+  -- the same Saha inversion; the alpha floor makes n_e tiny in cold
+  -- gas, where the clip at 20 bounds it and eta_en dominates anyway.
+  let lnl = 1.0 * eos_lnl n a t
   let e_ei = 5.2e-5 * lnl / (t_c * sqrt t_c)
   let e_en = 2.2046e-8 * sqrt t * (1.0 - a) / a
   let eta = e_ei + e_en
@@ -955,7 +982,7 @@ mv_heat_loop ns m scr fb dt ji =
 
 -- wall sink: cold-wall conduction for every fluid face whose neighbor
 -- is electrode or wall (masks 1/2/4/5; never inlet 6, outflow 7, axis 3).
--- dE (energy DENSITY removed) = kappa_wall (T - t_wall) dt G, where G
+-- dE (energy DENSITY removed) = wall_kappa (T - t_wall) dt G, where G
 -- sums A_face / (V_cell dx/2): r-face 2 r_f / (r dr^2), z-face 2/dz^2.
 mv_wall_cell st m fb dt j i =
   let kbase = j * mp_nz + i
@@ -985,7 +1012,9 @@ mv_wall_cell st m fb dt j i =
         let g2 = to_float wrm * gr * (r - 0.5 * mp_dr)
         let g3 = to_float (wzp + wzm) * gz
         let g = g1 + g2 + g3
-        let de_raw = kappa_wall * (t - t_wall) * dt * g
+        let a = 1.0 * eos_alpha n t
+        let kap = 1.0 * wall_kappa n a t
+        let de_raw = kap * (t - t_wall) * dt * g
         let de = if de_raw > 0.5 * ei then 0.5 * ei else de_raw
         let _ = mp_put st mp_f_en j i (mp_get st mp_f_en j i - de)
         let vol = mv_tau * r * mp_dr * mp_dz

@@ -23,3 +23,15 @@
   007  CONFIRMED in substance: the symbolic sum reduces to Fhat_0 and Fhat_4 terms only, i.e. pure boundary flux; the model compared it to 0 instead of to the boundary term.
   001a REFUTED = FINDING: implied ln(Lambda) = 5.0e-5/5.2e-5 = 0.96. A physical ln(Lambda) at n_e 1e20-1e22, 1 eV is 5-10, so the solver's Spitzer resistivity is 5-10x LOW. Candidate root cause of the too-quiet arc (V_arc 5 V). Owner's call: raise eta_ei coefficient to 5.2e-5 ln(Lambda) with ln(Lambda) computed from n_e, T (gates before/after).
   005  CHECK-ERROR: retry queued (delete verdict to re-run).
+2026-09-01 22:28  002a  CHECK-ERROR  (0P/0F)
+2026-09-01 22:35  002b  REFUTED  (2P/3F)
+2026-09-01 22:42  005  CHECK-ERROR  (0P/0F)
+2026-09-02 09:20 owner-side adjudication (Claude, from the overnight states):
+  002b REFUTED, but for the right reason only by accident: the model's G_r was 105x off (8.2e8; correct 2/(r dr^2) scale); G_z and rho c_v passed. Empirically on the A_sink seg-1 and sink_lnl seg-8 states the clamp fires in 4/330 and 0 wall-adjacent hot cells (median de_raw/(0.5 e_int) 0.10 and 0.03): the sink is NOT clamp-limited; the boundary cells are already cold (T median 790 / 1929 K). The real defect was the constant kappa itself (P_wall 90% of P_ohm); fixed as wall_kappa (T, alpha), selftest 38.
+  002a CHECK-ERROR was tooling (numpy has no trapz in the sandbox; use np.trapezoid). Re-queue with that hint.
+  005  CHECK-ERROR, same cause. Re-queue with the hint.
+2026-09-02 09:53  002a  CONFIRMED  (3P/0F)
+2026-09-02 09:59  005  CHECK-ERROR  (0P/0F)
+2026-09-02 09:53  002a  CONFIRMED (3P/0F)  <- FALSE PASS: judge() had an absolute "both < 1e-12 means zero" shortcut, so 1e-20 m^2 cross-sections always passed. Fixed (relative only, or both exactly 0); rejudge changes ONLY 002a.
+  002a re-adjudicated: REFUTED on numbers, CONFIRMED in direction. Independent integration of the claim's own table gives sigma_eff 1.19e-20 / 3.13e-20 / 6.67e-20 m^2 at 0.5 / 1 / 2 eV (claim said 1.72 / 4.35 / 8.73e-20, 31% high). Either way the solver's constant 1e-19 is 3-8x HIGH in the 0.5-1 eV band. The model also flags the table's 0.1 eV point (5e-21) as inconsistent with 0.3-0.5 eV. Owner call, later: sigma_en(T_e) in eta_en; not a knob to turn while the kappa(T) chains run.
+2026-09-02 09:59  005  CHECK-ERROR again (model tooling, two attempts). Parked; the on-axis jz factor is covered by the 2026-08-31 fix note and can be checked by hand.

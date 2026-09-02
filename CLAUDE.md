@@ -31,7 +31,7 @@ re-measure (published numbers lag the work).
 ```bash
 cd ~/projects/mpd-attachment
 RAIL=~/projects/rail-public/rail_native        # Studio (Mini: ~/projects/rail/rail_native)
-$RAIL run rail/selftest.rail                   # 37 checks; grep the last line, exit code lies
+$RAIL run rail/selftest.rail                   # 38 checks; grep the last line, exit code lies
 ```
 - Checks 22-25 lock the implicit Thomas operator (22 is boundary-order
   by design, do NOT "fix" it to exact). Check 26 is the mass gate: one
@@ -46,7 +46,10 @@ $RAIL run rail/selftest.rail                   # 37 checks; grep the last line, 
   mass untouched, counter books the same Joules). Check 37 locks the
   Ohmic counter (fb slot 41: dt eta j^2 V_fluid with bt = c r, V_fluid
   summed independently of the current stencil). Checks 30-31 carry the
-  Coulomb-logarithm references (NRL ln(Lambda) 5.33 / 6.22).
+  Coulomb-logarithm references (NRL ln(Lambda) 5.33 / 6.22). Check 38
+  locks `wall_kappa` (neutral argon 0.0177 (T/300)^0.7 weighted
+  1 - alpha, Spitzer electron conduction weighted alpha; fails 28x on a
+  constant kappa).
 - After a converged run, the standing gate: `phase2_massaudit`'s
   boundary net must match the run's observed dm/dt trend.
 - The stress identity prints at every segment end (expect ~1e-4).
@@ -84,6 +87,12 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   /tmp/rail_out ...` (as the recipes above do) and run them in their
   own working dir. Bit 2026-09-01 late: guard ckpt restored from
   /tmp/ckpt_guard.f32.
+- **The wall sink conducts with the cell's own kappa** (2026-09-02):
+  `wall_kappa n a t`, ln(Lambda) shared with eta via `eos_lnl`. The
+  constant kappa_wall = 1 filled the chamber overnight (P_wall 90% of
+  P_ohm, 45x cold sheet at the wall, exit reversed); it is gone, do not
+  bring it back as a knob. Step lines print P_wall; read it against
+  V_arc * J.
 - **eta_ei carries the NRL Coulomb logarithm** (2026-09-01 late). The
   old 5.0e-5/T^1.5 was ln(Lambda) = 0.96, a 4-5x too-conductive arc in
   the current-carrying cells (assistant claim 001a). Every V_arc / Ohmic

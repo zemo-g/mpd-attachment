@@ -697,3 +697,72 @@ Overnight chains (all from the A_sink / A_nosink segment-1 states):
   segments each (no V_arc column in their binaries).
 Each dir: chain.log (segment start/done), run_segN.log, out/ckpt_segN
 .f32, out/state_segN.csv. Chain driver /tmp/chain_dir.sh.
+
+### 2026-09-02 morning: overnight verdict, the constant sink fell
+
+All three chains completed 8 segments (07:13). Step-18000 values:
+
+| chain | mass kg | ptip Pa | pwall Pa | mdot_out kg/s | plateau |
+|---|---|---|---|---|---|
+| A_nosink (legacy eta, adiabatic) | 2.61e-6 flat seg 3-8 | 2479 | 2155 | 5.90e-3 | YES |
+| A_sink (legacy eta, kappa 1) | 3.25e-6 -> 2.24e-5 linear | 6420 | 4414 | 1.6-2.0e-3 | no |
+| A_sink_lnl (NRL eta, kappa 1) | -> 4.04e-5 linear | 13460 | 10584 | -7.2e-4 | no |
+
+Diagnosis (states only, no solver touched): on sink_lnl P_wall / P_ohm
+climbed 130/180 kW (seg 1) -> 169/205 (seg 4) -> 218/242 (seg 8), i.e.
+90% of the Ohmic input leaves through the chamber wall. Wall-adjacent
+cells: rho 6.5e-2 at 762 K against 1.5e-3 at 6677 K in the control (a
+45x cold sheet); 34-47% of all mass sits below 1000 K. Outflow-face
+median vz 803 (nosink) -> 133 (sink) -> 77 m/s (sink_lnl), 44% of exit
+cells backflowing. The exit BC behaves; the gas reaching it is cold and
+slow. Pressure rises because mass is trapped, not because the exit is
+closed. A constant 1 W/m/K over a half cell is h ~ 4000 W/m^2/K on
+5e-2 m^2 of wall, bounded only by cooling the gas to t_wall, which is
+exactly what it did.
+
+Claim 002b (sink clamp-limited, tau 4e-8 ~ 1.3 dt) is WRONG
+empirically: clamp hits on wall-adjacent cells 4/330 (A_sink seg 1),
+0 (sink_lnl seg 8; median de_raw/(0.5 e_int) 0.03). The boundary cells
+are already cold, so the per-step sink there is small. The assistant's
+REFUTED on 002b came from its own arithmetic (G_r 105x off); adjudicated
+by hand: refuted, right conclusion, wrong reasoning. 002a and 005
+returned CHECK-ERROR (no np.trapz in the sandbox), no physics verdict.
+
+Greenlit ("throw the sink at A"): the conductivity is now the cell's
+own. `wall_kappa n a t` = (1 - alpha) 0.0177 (T/300)^0.7 [neutral
+argon, fit to tabulated 300-5000 K within 5%] + alpha kappa_e, kappa_e
+= 3.2 k^2 T (n_e tau_e) / m_e with NRL tau_e = 2.30349e-4 T_K T_eV^1.5 /
+ln(Lambda) (0.27 W/m/K at 1 eV, ln(Lambda) 10). ln(Lambda) moved into
+`eos_lnl`, shared by eta and the sink. The cold sheet chokes its own
+sink ~28x; a 15 kK cell still sees ~1 W/m/K. Selftest 38 locks it
+(Python references 0.0351683003 at 800 K neutral, 0.99349970 at
+n = 1e22, 15000 K; fails 28x on a constant kappa, verified). Gates:
+38/38 before (37) and after; smoke on the pf2 guard state runs clean
+(dt 2.5e-8, inlet exact). On that hot state the new sink is 127 kW
+against the constant's 219 kW (1.7x): Spitzer conduction at 10+ kK is
+close to 1 W/m/K, so the self-limiting only shows once a sheet cools.
+Whether it plateaus is the empirical question the chains answer.
+
+Chains launched 09:43 (binary /tmp/p2A_sink_kT, 8 segments each):
+- /tmp/run_kT_fromA: from the nosink plateau (ckpt_seg8). THE MODEL.
+- /tmp/run_kT_fromfill: from the filled sink_lnl seg-8 state. Drain
+  test: if the new sink is right, this state must lose mass.
+
+Nosink control judged at its plateau (legacy eta; massaudit 1.7e-7
+PASS, net 4.66e-6 kg/s = 0.1% of mass per segment):
+- tip 2479 vs Cory 2104 (+18%); wall 2155 vs 465 (4.6x); backplate
+  profile flat (5731 at the cathode base, 2455 mid, 2155 wall) against
+  Cory's parabola 1662 -> 465, rms 1.53; T_exhaust 37.1 N vs ~24.6
+  measured (+51%); stress identity 3e-5.
+- Attachment: the surface split is prescribed (I_in/J linear 1.0 -> 0.2
+  along the barrel), so "distributed along the shank" is an input, not a
+  finding. Free interior: peak |j| 6.26e6 A/m^2 at the tip corner
+  (r 0.12 cm, z 10.19); hottest 1% of volume carries 17% of the Ohmic
+  power, 5% carries 43.5%, peak/mean 66x; power centroid r_q 1.5-2 cm
+  along the barrel, 3.7 cm at the anode plane; channel r_half 3.1 cm
+  at z 1 -> 2.1 at z 4-5 -> 5 at the anode. No constriction onto the
+  tip beyond the prescribed corner peak. Under NRL eta on the same
+  state the tool says 194 kW / 24.3 V (legacy 63 kW / 7.9 V), so the
+  "too quiet arc" was mostly the Coulomb logarithm.
+Images out/img/phase2_A_nosink_{current,alpha,hero,fields}.png; state
+and ckpt in out/ as *_A_nosink_seg8.*.
