@@ -78,6 +78,14 @@ run_loop st ns aux btp m fb scr n =
         -- ns's ghost row is one step stale without this
         let _ = mv_apply_ghosts ns btp m
         let mdin = 1.0 * mv_inlet_rate ns m dt
+        -- exit-plane probe (2026-09-02, ships with the pressure outlet):
+        -- mass-flux-weighted exit Mach, count of backflowing exit cells,
+        -- min exit p. Watch the choke happen instead of inferring it
+        -- from the state csv afterwards.
+        let ex = float_arr_new 5 0.0
+        let _ = float_arr_set ex 3 1.0e30
+        let _ = mv_exit_probe ns m ex 1
+        let mexit = if float_arr_get ex 1 > 0.0 then float_arr_get ex 0 / float_arr_get ex 1 else 0.0
         -- wall-sink counter: fb slot 40 is cumulative Joules removed;
         -- report the interval-average power so a runaway or dead sink
         -- is visible in every print
@@ -104,6 +112,9 @@ run_loop st ns aux btp m fb scr n =
                     "  mdot_out=", show_float (float_arr_get am 0),
                     "  P_wall=", show_float pww,
                     "  V_arc=", show_float varc,
+                    "  M_exit=", show_float mexit,
+                    "  bf=", show (to_int (float_arr_get ex 2)),
+                    "  p_exit=", show_float (float_arr_get ex 3),
                     "  wall=", show el, "s ", show msps, "ms/step eta ", show etam, "min"])
       else 0
     run_loop ns st aux btp m fb scr (n - 1)

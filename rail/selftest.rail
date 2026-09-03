@@ -387,11 +387,72 @@ main =
   let ok38 = if fabs (kc38 / 0.0351683003 - 1.0) < 0.000001
              then fabs (kh38 / 0.99349970 - 1.0) < 0.001 else false
   let f38 = check "wall kappa self-limits (neutral 800 K, Spitzer 15 kK)" ok38 f37
-  if f38 == 0 then
-    let _ = print "SELFTEST PASS (38 checks)"
+  -- (39) pressure outlet + exit probe (2026-09-02). Three exit cells
+  -- (column mp_nzm2) on a cold-ideal state (rho 2e-3 / p 2000 and
+  -- rho 1e-3 / p 1000, both 4800 K, alpha ~1e-6): j=20 subsonic outflow
+  -- vz 500 (c_s 1291), j=40 supersonic vz 5000, j=60 backflow vz -300.
+  -- After one ghost fill the ghost column must read: j=20 rho and mz
+  -- copied, p == amb_p; j=40 e_int copied (zero gradient); j=60 amb_rho
+  -- at rest at amb_p; bt negated in all three. The probe must return the
+  -- mass-flux-weighted Mach (m20 M20 + m40 M40)/(m20 + m40) with
+  -- M = vz sqrt(3 rho / (5 p)), one backflow cell, min p over the column
+  -- (the untouched 300 K prefill, fill_rho kT_m) and the fluid-cell count. The old zero-gradient ghost fails the
+  -- subsonic and backflow branches. The Mach reference is the cold ideal
+  -- value; the Saha inversion at 4800 K moves p by ~1e-4 (alpha ~1e-4 and
+  -- the ionization share of e_int), hence 1e-3 rel there, exact elsewhere.
+  let st39 = mv_init jt2
+  let ie39 = 0 + mp_nzm2
+  let ig39 = ie39 + 1
+  let _ = mp_put st39 mp_f_rho 20 ie39 0.002
+  let _ = mp_put st39 mp_f_mz 20 ie39 1.0
+  let _ = mp_put st39 mp_f_en 20 ie39 (2000.0 / gamma_m1 + 0.5 * 1.0 * 500.0 + 0.5 * 0.01 * 0.01 * inv_mu0)
+  let _ = mp_put st39 mp_f_rho 40 ie39 0.001
+  let _ = mp_put st39 mp_f_mz 40 ie39 5.0
+  let _ = mp_put st39 mp_f_en 40 ie39 (1000.0 / gamma_m1 + 0.5 * 5.0 * 5000.0 + 0.5 * 0.02 * 0.02 * inv_mu0)
+  let _ = mp_put st39 mp_f_rho 60 ie39 0.002
+  let _ = mp_put st39 mp_f_mz 60 ie39 (0.0 - 0.6)
+  let _ = mp_put st39 mp_f_en 60 ie39 (2000.0 / gamma_m1 + 0.5 * 0.6 * 300.0 + 0.5 * 0.03 * 0.03 * inv_mu0)
+  let _ = mp_put st39 mp_f_bt 20 ie39 0.01
+  let _ = mp_put st39 mp_f_bt 40 ie39 0.02
+  let _ = mp_put st39 mp_f_bt 60 ie39 0.03
+  let _ = mv_apply_ghosts st39 btp m
+  let pg20 = 1.0 * mv_pressure st39 20 ig39
+  let ok39a = if mp_get st39 mp_f_rho 20 ig39 == 0.002
+              then if mp_get st39 mp_f_mz 20 ig39 == 1.0
+              then fabs (pg20 / amb_p - 1.0) < 0.000000001 else false else false
+  let ef40 = 1.0 * mv_eint st39 40 ie39
+  let eg40 = 1.0 * mv_eint st39 40 ig39
+  let ok39b = if mp_get st39 mp_f_rho 40 ig39 == 0.001
+              then if mp_get st39 mp_f_mz 40 ig39 == 5.0
+              then fabs (eg40 / ef40 - 1.0) < 0.000000001 else false else false
+  let pg60 = 1.0 * mv_pressure st39 60 ig39
+  let ok39c = if mp_get st39 mp_f_rho 60 ig39 == amb_rho
+              then if mp_get st39 mp_f_mz 60 ig39 == 0.0
+              then fabs (pg60 / amb_p - 1.0) < 0.000000001 else false else false
+  let okbt = if mp_get st39 mp_f_bt 20 ig39 == 0.0 - 0.01
+             then if mp_get st39 mp_f_bt 40 ig39 == 0.0 - 0.02
+             then mp_get st39 mp_f_bt 60 ig39 == 0.0 - 0.03 else false else false
+  let ex39 = float_arr_new 5 0.0
+  let _ = float_arr_set ex39 3 1.0e30
+  let _ = mv_exit_probe st39 m ex39 1
+  let m20 = 1.0 * mp_r_of 20
+  let m40 = 1.0 * mp_r_of 40
+  let mach20 = 500.0 * sqrt (3.0 * 0.002 / (5.0 * 2000.0))
+  let mach40 = 5000.0 * sqrt (3.0 * 0.001 / (5.0 * 1000.0))
+  let mexp = (1.0 * m20 * mach20 + 5.0 * m40 * mach40) / (1.0 * m20 + 5.0 * m40)
+  let mgot = float_arr_get ex39 0 / float_arr_get ex39 1
+  let okpr = if fabs (mgot / mexp - 1.0) < 0.001
+             then if float_arr_get ex39 2 == 1.0
+             then if float_arr_get ex39 4 == 128.0
+             then fabs (float_arr_get ex39 3 / (fill_rho * kT_m) - 1.0) < 0.000000001
+             else false else false else false
+  let ok39 = if ok39a then if ok39b then if ok39c then if okbt then okpr else false else false else false else false
+  let f39 = check "pressure outlet ghost (3 branches) + exit probe" ok39 f38
+  if f39 == 0 then
+    let _ = print "SELFTEST PASS (39 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f38, " of 38)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f39, " of 39)"])
     1
 
 st37_fill stx c ji =

@@ -766,3 +766,215 @@ PASS, net 4.66e-6 kg/s = 0.1% of mass per segment):
   "too quiet arc" was mostly the Coulomb logarithm.
 Images out/img/phase2_A_nosink_{current,alpha,hero,fields}.png; state
 and ckpt in out/ as *_A_nosink_seg8.*.
+
+## 2026-09-02 afternoon: the kappa(T) chains were two attractors, the outflow ghost was the floor
+
+kappa(T) sink chains (binary /tmp/p2A_sink_kT, step 18000 of each
+segment; started 09:43, stopped at seg 5 at 15:10):
+
+| chain | seg | mass kg | ptip | pwall | mdot_out | P_wall/P_ohm |
+|---|---|---|---|---|---|---|
+| fromA | 1 | 2.423e-6 | 1353 | 1180 | 6.07e-3 | 0.44 |
+| fromA | 2 | 2.455e-6 | 1461 | 1152 | 5.41e-3 | 0.46 |
+| fromA | 3 | 2.700e-6 | 1692 | 1284 | 5.18e-3 | 0.47 |
+| fromA | 4 | 3.050e-6 | 1996 | 1504 | 5.08e-3 | 0.48 |
+| fromfill | 1 | 2.935e-5 | 21603 | 21065 | 8.79e-3 | 0.60 |
+| fromfill | 2 | 2.820e-5 | 23549 | 22878 | 5.01e-3 | 0.74 |
+| fromfill | 3 | 2.814e-5 | 23684 | 23022 | 5.63e-3 | 0.74 |
+| fromfill | 4 | 2.756e-5 | 23027 | 22405 | 6.00e-3 | 0.73 |
+
+The sink fix did what it was asked (P_wall about half of P_ohm, no cold
+sheet, V_arc ~21 V) but neither chain is a plateau: fromA drained once
+then refilled at +0.35e-6 kg/segment (in minus out ~0.9e-3 kg/s), and
+fromfill lost 6% and stalled in a quasi-steady FILLED state at 23 kPa
+with mdot_out = mdot_in. Two attractors of one solver.
+
+Exit-plane analysis (state csv, c_s = sqrt(5/3 p/rho)):
+
+| state | exit Mach med / max | p at r=4 cm, z 5 -> 104 | backflow |
+|---|---|---|---|
+| nosink seg8 | 0.36 / 0.85 | 2.2 kPa flat | r > 5 cm |
+| kT_fromA seg4 | 0.44 / 0.74 | 1978 -> 2208 Pa | r > 5 cm |
+| kT_fromfill seg3 | 0.04 / 0.15 | 20394 -> 23657 Pa | r > 3 cm |
+
+Every exit cell subsonic in every state, pressure uniform across the
+chamber and RISING toward the exit face. The mask-7 ghost was a
+zero-gradient copy of the fluid cell; on subsonic outflow one
+characteristic enters from outside and nothing set it, so the exterior
+(tank) pressure never entered the problem and the chamber floor was
+whatever the transient left. 6 g/s through the exit annulus at ~12 kK
+chokes near rho 2e-4, p ~550 Pa: the order of Cory's 465 Pa wall, not
+2155 (nosink) or 23000 (fromfill). The 4.6x wall over-pressure, the
+flat backplate profile and the +18% tip on the nosink plateau all sat
+on this floor.
+
+Greenlit ("Green"), shipped, gates 38/38 before and 39/39 after:
+- counter first: `mv_exit_probe` (mass-flux-weighted exit Mach,
+  backflowing exit cells, min exit p) on the step line as `M_exit=`,
+  `bf=`, `p_exit=`;
+- `mv_ghost_exit`: subsonic outflow cell -> ghost carries amb_p (rho and
+  momentum zero-gradient); supersonic -> zero-gradient as before;
+  backflow -> ambient at rest; bt negated in all three;
+- selftest check 39 locks the three branches and the probe; the old
+  ghost fails it (verified by swapping it back in).
+
+Smoke, 400 steps from the nosink plateau (/tmp/p2smoke_exit):
+M_exit 0.58 -> 0.82 (step 40) -> 0.97 (80) -> 1.06 (360); p_exit 1728
+-> 195 Pa; mdot_out 6.3e-3 -> 13.4e-3 peak -> 11.5e-3 (draining);
+pwall 2092 -> 1224 within 11 us; bf 0 throughout; dt 2.9e-8 -> 3.2e-8
+(no dip). ptip barely moved yet (2472 -> 2249): the pinch is local,
+the floor under it is what is leaving.
+
+Running since 15:10: /tmp/run_exit_fromA (nosink seg8 start, THE MODEL)
+and /tmp/run_exit_fromfill (kT_fromfill seg4 start, 23 kPa; uniqueness
+test, must drain to the same plateau). Binary /tmp/p2exit. Judgement
+routine in NEXT_SESSION.md.
+
+Lesson for the log: I judged the nosink plateau this morning against
+Cory with a boundary that could not represent the tank. "Plateau" is
+necessary, not sufficient; the exit probe now makes the outlet's state
+visible on every print, so the next judgement starts from M_exit.
+
+Independent audit (Sonnet helper, notes/exit_audit_2026-09-02.md,
+script tools/audit_exit_2026-09-02.py): old states 0% of exit mass flux
+supersonic (M_w 0.55 nosink, 0.12 fromfill, fromfill 52/128 exit cells
+backflowing); smoke state M_w 1.08, 71% supersonic by mass flux. Choked
+6 g/s at the smoke exit temperature profile: rho 3.0e-4, p_floor 428 Pa
+(gamma 5/3; +-30% for the Saha c_s), vs Cory 465. Old floors 2155 and
+23000. Caveat it raised and I verified in mv_lxf_field: the face
+dissipation is Lax-Friedrichs with coefficient dx/(4 dt) on the GLOBAL
+dt (dz/4dt ~1e4 m/s, dr/4dt ~4e3 at dt 3e-8), 3-5x the local signal
+speed at the exit, so the 1 Pa ghost drains the LAST cell's thermal
+energy faster than free expansion would. One cell wide, same scheme
+everywhere (header caveat), not a solver change now; watch p_exit and
+the exit T for an undershoot.
+
+### Outlet chain progress (segment endpoints, both chains)
+
+| seg | fromA mass | wall | tip | mdot_out | T_exh | M_exit | fromfill mass | wall | tip | mdot_out |
+|---|---|---|---|---|---|---|---|---|---|---|
+| 1 | 2.00e-6 | 1042 | 1215 | | 20.9 | | 6.44e-6 | 3610 | 3316 | |
+| 2 | 1.78e-6 | 913 | 1161 | 6.24e-3 | 19.75 | | 2.66e-6 | 1532 | 1710 | 8.5e-3 |
+| 3 | 1.708e-6 | 870 | 1139 | 6.07e-3 | 19.36 | 1.18 | 1.81e-6 | 1005 | 1317 | 6.6e-3 |
+| 4 | 1.676e-6 | 862 | 1117 | 6.05e-3 | 19.34 | 1.18 | 1.58e-6 | 853 | 1008 | 6.28e-3 |
+| 5 | 1.651e-6 | 849 | 1107 | 6.006e-3 | 19.24 | 1.18 | 1.50e-6 | 798 | 964 | 6.09e-3 |
+| 6 | 1.641e-6 | 844 | 1105 | 5.986e-3 | 19.19 | 1.18 | 1.47e-6 | 777 | 949 | 6.02e-3 |
+| 7 | 1.637e-6 | 841 | 1104 | 5.978e-3 | 19.16 | 1.18 | 1.458e-6 | 768 | 943 | 5.99e-3 |
+| 8 | 1.636e-6 | 841 | 1104 | 5.975e-3 | 19.16 | 1.18 | 1.453e-6 | 765 | 940 | 5.98e-3 |
+| 9 | 1.635e-6 | 840 | 1104 | 5.973e-3 | 19.15 | 1.18 | 1.451e-6 | 764 | 939 | 5.97e-3 |
+| 10 | 1.635e-6 | 840 | 1104 | 5.972e-3 | 19.15 | 1.18 | 1.450e-6 | 762 | 939 | 5.97e-3 |
+| 11 | 1.635e-6 | 840 | 1104 | 5.973e-3 | 19.16 | 1.18 | 1.450e-6 | 763 | 938 | 5.97e-3 |
+| 12 | 1.635e-6 | 840 | 1104 | 5.973e-3 | 19.15 | 1.18 | 1.450e-6 | 763 | 939 | 5.97e-3 |
+
+Seg 4 (20:17): fromA drain decelerating (-9, -3.7, -1.7 %/seg), wall
+flat at ~862 since seg 3, tip still easing (1145 -> 1117 within the
+segment), T_exhaust 19.34 N flat, bf 0, p_exit ~54, P_wall 73.7 kW of
+170 kW Ohmic (V_arc 21.3 V). Backplate at cathode 1989 Pa vs tip 1117:
+the pressure maximum sits at the backplate/cathode root, not the tip.
+fromfill crossed BELOW fromA in mass while still draining (mdot_out
+6.3e-3), wall pressure now equal to fromA's (861 vs 862), tip lower
+(1023). Same attractor on wall; whether the two meet in mass/tip is the
+seg 5-6 question.
+
+Seg 6 fromA (22:49): mass 1.641e-6 (-0.6%/seg), mdot_out 5.986e-3, now
+just BELOW the inlet, wall 844, tip 1105, T_exh 19.19 N. fromA is at
+its plateau by the CLAUDE.md standard. fromfill (seg 6 step 18k) sits
+at 1.471e-6, wall 777, tip 957, mdot_out 6.02e-3, still -2.2%/seg.
+Where the 1.4e-7 kg difference lives (state_seg6 vs state_seg5, numpy):
+the upstream reservoir z < 8 cm, r 3-6 cm, i.e. the slow outer gas
+(|v| ~200 m/s). fromfill's reservoir is 12% less dense and 7% warmer
+at nearly the same pressure (1186 vs 1235 Pa); exit region and arc
+column agree within a few %. Thrust agrees to 0.3%. So the residual is
+a slow thermal mode of the reservoir (wall conduction + recirculation),
+not a second arc solution: fromfill passed through fromA's mass without
+stopping because its reservoir temperature differed. Decision: let both
+run to seg 8; if the reservoirs still differ by > 5% extend both chains
+4 segments (compute is free) before judging tip/wall/profile. The wall
+number for the judgement is already bracketed: 780-850 Pa vs Cory 465
+(1.7-1.8x, was 4.6x), tip 960-1110 vs 2104 (-50%).
+
+## 2026-09-03 01:30: pressure-outlet plateau JUDGED (fromA seg 8)
+
+Plateau by the CLAUDE.md standard: seg 6-8 mass 1.641/1.637/1.636e-6,
+wall 844/841/841, tip 1105/1104/1104, T_exh 19.19/19.16/19.16 N,
+mdot_out 5.98e-3 vs in 6.00e-3, M_exit 1.18, bf 0, p_exit ~50 Pa,
+P_wall 73.6 kW of 179.6 kW Ohmic (V_arc 21.3 V from the counter, 22.5 V
+from the map's cell integral). Stress identity -6.4e-5.
+Massaudit gate on ckpt_seg8 (binary /tmp/p2a_exit, dir /tmp/audit_exit):
+2.3e-7 PASS. Families: inlet 6.000e-3, outflow -5.975e-3, cathode
+-9.6e-5, anode +7.2e-5 (the known corner-ghost diffusive leak: a
+convex-corner ghost has two fluid neighbours and one rho; planar walls
+book 0). Net electrode leak -2.4e-5 = 0.4% of mdot; note, not a fix.
+
+Images out/img/phase2_A_exit_seg8_{hero,fields,current,alpha}.png;
+state out/phase2_state_A_exit_seg8.csv, ckpt out/phase2_ckpt_A_exit_seg8.f32.
+
+### Versus Cory (8 kA, 6 g/s)
+
+| quantity | Cory | nosink plateau (09-02 am, floor BC) | outlet plateau fromA | fromfill bracket |
+|---|---|---|---|---|
+| cathode tip p (Pa) | 2104 | 2479 (+18%) | 1104 (-48%) | 943 (-55%) |
+| backplate at wall (Pa) | 465 | 2155 (4.6x) | 841 (1.8x) | 768 (1.65x) |
+| backplate profile rms | 0 | 1.53 (flat) | 0.29 | |
+| thrust (N) | ~24.6 | 37.1 | 19.16 (-22%) | 19.0 |
+| exit Mach (mass-weighted) | >1 | 0.55 | 1.18 | 1.13 |
+
+The profile now has the right SHAPE: Cory's parabola p = 1689 - 2.99e5
+r^2 is matched within 0.87-0.97 at r = 3.0-3.4 cm and within 1.16-1.28
+at the cathode root; the excess is all at r > 5.5 cm where the solver
+sits on a 1030 Pa shelf (the outer reservoir) while Cory falls to 465.
+So the wall number is no longer a boundary artefact (the outlet is
+choked, p_exit 50 Pa), it is the reservoir: slow outer gas (|v| ~200
+m/s, 4300 K) that Cory's data says should be at half our pressure. The
+reservoir is also where the two chains differ (12% in rho, 7% in T):
+the model's least-determined region and the one that sets the wall.
+
+Constriction: the surface split is still PRESCRIBED (linear, 0.2 of J
+at the tip, mp_build_btp), so only the interior channel is a prediction.
+Peak |j| 6.4e6 A/m^2 at r = 0.12 cm, z = 10.31 cm: on the axis just
+past the tip; hottest 1% of volume carries 18.0% of the Ohmic power
+(17% on the nosink plateau), 27% of Ohmic is downstream of the tip
+plane. The pressure MAXIMUM, however, sits at the cathode root on the
+backplate (1930-2100 Pa, r 1.0-1.2 cm), not at the tip (1104): the
+model pinches at the root because 80% of J is forced to enter the
+cathode along its length, and the tip pinch that Cory measures
+(2104 at the tip vs 1662 inferred at the root) cannot appear while the
+split is prescribed. Verdict on the program question: with the split
+prescribed the answer is "constricts onto the axis downstream of the
+tip, not onto the tip"; the honest next step is to free the surface
+attachment (cathode as an equipotential: the surface current density
+follows from the interior solution) rather than tune anything.
+
+Thrust -22%: the electromagnetic term scales as J^2 and is fixed by the
+split; the deficit is the gasdynamic/pinch part, consistent with the
+missing tip pinch.
+
+What the outlet fix bought: wall 4.6x -> 1.8x, profile flat -> right
+shape (rms 1.53 -> 0.29), exit choked, thrust 37 -> 19 N (now under
+rather than over), two attractors -> two plateaus 10% apart in the
+reservoir only. Chains extended to seg 12 (both) as a uniqueness watch;
+judgement above does not depend on which plateau wins.
+
+Ranked next steps (owner call):
+1. Free the cathode surface split (the program's actual question). The
+   prescribed 0.2 tip split is the single largest known model choice
+   and it controls tip p, pinch location and thrust.
+2. Reservoir/wall: sigma_en(T_e) and the wall sink's cold-sheet physics
+   set the reservoir T; the outer shelf 1030 vs 465 is the wall error.
+3. LxF global-dt dissipation at the exit (audit caveat): scheme, not
+   physics; revisit only if the exit T undershoots.
+
+### 2026-09-03 06:35: uniqueness watch closed (seg 9-12)
+
+Both chains static to four figures over seg 9-12: fromA 1.635e-6 /
+wall 840 / tip 1104 / 19.15 N; fromfill 1.450e-6 / wall 763 / tip 939 /
+18.97 N. Closing rate of the mass gap ~1e-9 kg/segment, i.e. > 100
+segments to meet: on any affordable run the outer reservoir keeps the
+state it started with. Read it as: the arc, exit and thrust are
+uniquely determined (thrust agrees to 1%); the outer reservoir, and
+with it the wall pressure (763-840) and the tip pressure (939-1104), are
+NOT pinned by the present physics. The reservoir is where a wall-sheet
+model (sigma_en(T_e), sheath-limited sink) would act; that is item 2 of
+the ranked list and it is also a uniqueness question, not only an
+accuracy one. Chains done; outputs stay in /tmp/run_exit_*/out
+(ckpt_seg1-12, state_seg1-12). No processes running.

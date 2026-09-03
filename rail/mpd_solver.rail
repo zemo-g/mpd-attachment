@@ -515,9 +515,7 @@ mv_ghost_cell st btp m j i =
     let _ = mp_put st mp_f_mz j i mzg
     let _ = mp_put st mp_f_en j i (rho_in * kT_m / gamma_m1 + ke + me)
     mp_put st mp_f_bt j i btg
-  else if mk == 7 then
-    let btg = 0.0 - mp_get st mp_f_bt j mp_nzm2
-    mv_ghost_gas st j i j mp_nzm2 1.0 1.0 btg
+  else if mk == 7 then mv_ghost_exit st j i
   else if mk == 1 then
     if i == mp_i_tip then
       let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_tip1
@@ -537,6 +535,81 @@ mv_ghost_cell st btp m j i =
       let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_aof
       mv_ghost_gas st j i j mp_i_aof 1.0 (0.0 - 1.0) btg
     else mv_ghost_solid st btp j i
+
+-- ── outflow ghost: pressure outlet (2026-09-02, greenlit "Green") ──
+-- History: the mask-7 ghost was a zero-gradient copy of the fluid cell
+-- with bt negated. On a SUBSONIC exit one characteristic enters from
+-- outside and nothing set it, so the exterior pressure never entered the
+-- problem: every chain sat on an arbitrary chamber floor (nosink 2.2 kPa,
+-- the filled sink state 23 kPa, p RISING toward the exit face, exit Mach
+-- 0.04-0.85, never choked) and two attractors coexisted. 6 g/s through
+-- the exit annulus at ~12 kK chokes near 550 Pa, the order of Cory's
+-- 465 Pa wall, so the 4.6x wall over-pressure and the flat backplate
+-- profile were most plausibly this boundary.
+-- Now, per exit cell (fluid at j, mp_nzm2), tested on vz vs c_s =
+-- sqrt(5/3 p/rho) (bt is zero at the exit face, so no Alfven term):
+--   vz >= c_s   supersonic outflow: zero-gradient copy as before
+--   0 < vz < c_s subsonic outflow: rho and momentum zero-gradient, the
+--                ghost's thermal energy set so its pressure is amb_p
+--                (cold ideal branch: e_int = amb_p / gamma_m1); when the
+--                fluid is already at or below amb_p, zero-gradient
+--   vz <= 0     backflow: ambient state (amb_rho, at rest, amb_p) so no
+--                fictitious reservoir feeds the chamber
+-- bt ghost = -bt fluid in every branch (B = 0 at the exit face; all
+-- current closes inside the domain). Selftest check 39 locks the three
+-- branches and the exit probe below.
+mv_ghost_exit st j i =
+  let rho = mp_get st mp_f_rho j mp_nzm2
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mz = mp_get st mp_f_mz j mp_nzm2
+  let vz = 1.0 * mz / rho_safe
+  let p = 1.0 * mv_pressure st j mp_nzm2
+  let cs = 1.0 * sqrt (1.6666666666666667 * p / rho_safe)
+  let btg = 0.0 - mp_get st mp_f_bt j mp_nzm2
+  let me = 0.5 * btg * btg * inv_mu0
+  if vz >= cs then mv_ghost_gas st j i j mp_nzm2 1.0 1.0 btg
+  else if vz > 0.0 then
+    let mr = mp_get st mp_f_mr j mp_nzm2
+    let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+    let pa = 0.0 + amb_p
+    let eig = if p > pa then pa / gamma_m1 else 1.0 * mv_eint st j mp_nzm2
+    let _ = mp_put st mp_f_rho j i rho
+    let _ = mp_put st mp_f_mr j i mr
+    let _ = mp_put st mp_f_mz j i mz
+    let _ = mp_put st mp_f_en j i (eig + ke + me)
+    mp_put st mp_f_bt j i btg
+  else
+    let _ = mp_put st mp_f_rho j i amb_rho
+    let _ = mp_put st mp_f_mr j i 0.0
+    let _ = mp_put st mp_f_mz j i 0.0
+    let _ = mp_put st mp_f_en j i (amb_p / gamma_m1 + me)
+    mp_put st mp_f_bt j i btg
+
+-- exit-plane probe (the counter that ships with the outlet): over the
+-- fluid cells of column mp_nzm2, ex[0] += mz M dA and ex[1] += mz dA for
+-- outflowing cells (M = vz / c_s, c_s as above), so ex[0]/ex[1] is the
+-- mass-flux-weighted exit Mach number; ex[2] counts backflowing cells
+-- (mz < 0); ex[3] = min p over the column (caller seeds it high);
+-- ex[4] counts the fluid cells. Call with j = 1.
+mv_exit_probe st m ex j =
+  if j > mp_nrm2 then 0
+  else
+    let _ = if arr_get m (j * mp_nz + mp_nzm2) == 0 then
+        let rho = mp_get st mp_f_rho j mp_nzm2
+        let rho_safe = if rho < rho_floor then rho_floor else rho
+        let mz = mp_get st mp_f_mz j mp_nzm2
+        let p = 1.0 * mv_pressure st j mp_nzm2
+        let cs = sqrt (1.6666666666666667 * p / rho_safe)
+        let da = mv_tau * mp_r_of j * mp_dr
+        let _ = if mz > 0.0 then
+            let _ = float_arr_set ex 0 (float_arr_get ex 0 + mz * da * (mz / rho_safe) / cs)
+            float_arr_set ex 1 (float_arr_get ex 1 + mz * da)
+          else if mz < 0.0 then float_arr_set ex 2 (float_arr_get ex 2 + 1.0)
+          else 0.0
+        let _ = if p < float_arr_get ex 3 then float_arr_set ex 3 p else 0.0
+        float_arr_set ex 4 (float_arr_get ex 4 + 1.0)
+      else 0.0
+    mv_exit_probe st m ex (j + 1)
 
 mv_ghost_solid st btp j i =
   let btg = float_arr_get btp (j * mp_nz + i)

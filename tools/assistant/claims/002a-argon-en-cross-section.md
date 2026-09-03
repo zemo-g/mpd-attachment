@@ -28,4 +28,4 @@ partly a sigma_en artefact.
 Maxwellian in energy: f(e) ~ sqrt(e) exp(-e/T). sigma_eff = int sigma(e)
 sqrt(e) f(e) de / int sqrt(e) f(e) de, log-log interpolate the table,
 integrate 1e-3..1e2 eV. Print CHECK lines for the three ratios.
-Sandbox note: numpy here has NO np.trapz (removed in numpy 2); use np.trapezoid or a hand-written sum. scipy is absent.
+Sandbox note: numpy here has NO np.trapz (removed in numpy 2); use np.trapezoid or a hand-written sum. scipy 1.17 IS available (an earlier version of this note said it was absent; that was wrong).

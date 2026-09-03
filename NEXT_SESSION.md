@@ -13,32 +13,44 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
-## RUNNING NOW (2026-09-02 09:43, kappa(T) sink)
+## JUDGED 2026-09-03 01:30: pressure-outlet plateau (read this first)
 
-Overnight verdict is in notes/pion_chain_log.md "2026-09-02 morning":
-the nosink control plateaued (judged there); both constant-kappa sink
-chains filled without limit (P_wall reached 90% of P_ohm). The sink is
-now `wall_kappa` (T and alpha dependent, selftest 38). Two chains under
-/tmp/chain_dir.sh, binary /tmp/p2A_sink_kT, 8 segments x 20k steps:
-- `/tmp/run_kT_fromA`: from the nosink plateau. THE MODEL.
-- `/tmp/run_kT_fromfill`: from the filled sink_lnl state. Drain test.
-Per dir: chain.log, run.log (current), run_segN.log, out/ckpt_segN.f32,
-out/state_segN.csv. Step lines carry P_wall and V_arc.
+Full account: notes/pion_chain_log.md "2026-09-03 01:30". The outlet
+chains plateaued (fromA seg 6-8 flat to 0.3%): wall 841 Pa (Cory 465,
+1.8x; was 4.6x on the floor BC), tip 1104 (Cory 2104, -48%; was +18%),
+thrust 19.16 N (Cory ~24.6), M_exit 1.18, bf 0, massaudit 2.3e-7 PASS,
+profile rms 0.29 (was 1.53) with the RIGHT SHAPE: matches Cory's
+parabola at r 3.0-3.4 cm, sits on a 1030 Pa outer-reservoir shelf at
+r > 5.5 cm where Cory falls to 465. Images/state/ckpt saved as
+out/*A_exit_seg8*. fromfill (uniqueness) sits on a second plateau 10%
+lower in mass (1.46 vs 1.64e-6), wall 768, tip 943, thrust 19.0: the
+difference is ONLY the outer reservoir (12% rho, 7% T), the arc column,
+exit and thrust agree. Reservoir conduction time ~14 ms vs 3.4 ms run:
+a slow mode, not two arc solutions. Watch CLOSED at seg 12 (06:35):
+both static to four figures, gap closing at ~1e-9 kg/seg (> 100 segs to
+meet). Arc, exit and thrust are unique (1%); the outer reservoir, and
+with it wall (763-840) and tip (939-1104), are NOT pinned by the present
+physics. No chain processes running; outputs in /tmp/run_exit_*/out.
 
-Judgment when they finish: (1) fromA must plateau with P_wall a sane
-fraction of P_ohm (Cory-class devices lose a fraction, not 90%) and
-mdot_out ~ 6e-3; (2) fromfill must LOSE mass. If fromA still fills,
-the next physical bound is the sheath heat-transmission limit
-q <= gamma n_e c_s k T_e (gamma ~ 5-7) as a min() on the wall flux, not
-another constant. Then on the fromA checkpoint: massaudit
-(/tmp/p2a_kT), STATE= attachment_map, alpha_map, render_fields,
-compare_bp_profile; copy state/ckpt into out/ as *_A_kT_seg8.*.
+The finding that matters: the pressure MAXIMUM is at the cathode ROOT
+on the backplate (1930-2100 Pa), not at the tip. The prescribed linear
+split forces 80% of J into the cathode along its length, so the model
+cannot produce Cory's tip pinch. Peak |j| is on the axis just past the
+tip (r 0.12, z 10.31 cm), hottest 1% of volume = 18% of Ohmic.
+Ranked next (owner call): (1) free the cathode surface split, the
+program's actual question; (2) reservoir/wall physics (sigma_en(T_e),
+cold-sheet sink) for the 1030 vs 465 outer shelf; (3) LxF global-dt
+exit dissipation only if the exit T undershoots.
 
-Assistant: 002a/005 CHECK-ERROR (their sandbox has no np.trapz; re-queue
-with a hint to use np.trapezoid); 002b adjudicated by hand.
-GitHub: zemo-g/mpd-attachment private, Mini relay wired. Studio's
-/etc/hosts still pins api.github.com to a stale IP (gh unusable until
-`sudo sed -i '' '/api.github.com/d' /etc/hosts` in a real terminal).
+Housekeeping: all of 09-02 afternoon is UNCOMMITTED (solver, selftest
+39, runner, CLAUDE.md, notes, assistant files); commit only when asked.
+The kT chains' outputs remain in /tmp/run_kT_*; the old nosink state is
+out/phase2_state_A_nosink_seg8.csv. out/phase2_state.csv = fromA seg8.
+Assistant PARKED by the owner (worker loop killed); Sonnet helpers one
+at a time for numpy checks only. Opus reports in tools/assistant/
+(OPTIONS_2026-09-02.md) still await the A/B/C/D decision. Studio
+/etc/hosts still pins api.github.com (gh unusable until the owner
+deletes the line with sudo).
 
 ## The next block
 

@@ -11,4 +11,4 @@ form was found and fixed on 2026-08-31.
 # CHECK HINT
 j_z = (1/(2 pi r)) dI/dr symbolically with I = c r^2; then discrete:
 cells at r = (j-1/2)dr, ghost mirror r<0 with B antisymmetric.
-Sandbox note: numpy here has NO np.trapz (removed in numpy 2); use np.trapezoid or a hand-written sum. scipy is absent.
+Sandbox note: numpy here has NO np.trapz (removed in numpy 2); use np.trapezoid or a hand-written sum. scipy 1.17 IS available (an earlier version of this note said it was absent; that was wrong).

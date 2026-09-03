@@ -31,7 +31,7 @@ re-measure (published numbers lag the work).
 ```bash
 cd ~/projects/mpd-attachment
 RAIL=~/projects/rail-public/rail_native        # Studio (Mini: ~/projects/rail/rail_native)
-$RAIL run rail/selftest.rail                   # 38 checks; grep the last line, exit code lies
+$RAIL run rail/selftest.rail                   # 39 checks; grep the last line, exit code lies
 ```
 - Checks 22-25 lock the implicit Thomas operator (22 is boundary-order
   by design, do NOT "fix" it to exact). Check 26 is the mass gate: one
@@ -49,7 +49,13 @@ $RAIL run rail/selftest.rail                   # 38 checks; grep the last line, 
   Coulomb-logarithm references (NRL ln(Lambda) 5.33 / 6.22). Check 38
   locks `wall_kappa` (neutral argon 0.0177 (T/300)^0.7 weighted
   1 - alpha, Spitzer electron conduction weighted alpha; fails 28x on a
-  constant kappa).
+  constant kappa). Check 39 locks the pressure-outlet ghost (three
+  branches: subsonic outflow carries amb_p, supersonic zero-gradient,
+  backflow ambient at rest; bt negated) and `mv_exit_probe` (mass-flux-
+  weighted exit Mach, backflow count, min exit p); the old zero-gradient
+  ghost fails it.
+- Run the selftest FROM THE REPO DIR (imports resolve relative to cwd;
+  from elsewhere it dies in ld with `_run_hall` undefined).
 - After a converged run, the standing gate: `phase2_massaudit`'s
   boundary net must match the run's observed dm/dt trend.
 - The stress identity prints at every segment end (expect ~1e-4).
@@ -87,6 +93,22 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   /tmp/rail_out ...` (as the recipes above do) and run them in their
   own working dir. Bit 2026-09-01 late: guard ckpt restored from
   /tmp/ckpt_guard.f32.
+- **The outflow is a PRESSURE OUTLET (mv_ghost_exit, 2026-09-02).** The
+  old mask-7 ghost was a zero-gradient copy; on a subsonic exit nothing
+  set the incoming characteristic, so the chamber sat on an arbitrary
+  pressure floor (2.2 kPa on the nosink plateau, 23 kPa on the filled
+  sink state, p RISING toward the exit, exit Mach 0.04-0.85) and two
+  attractors coexisted. Now a subsonic exit cell sees amb_p in its
+  ghost, the exit chokes (smoke: M_exit 0.58 -> 1.06 in 400 steps,
+  p_exit 1728 -> 195 Pa, no dt dip). Step lines print `M_exit=`, `bf=`
+  (backflowing exit cells) and `p_exit=`; a plateau with M_exit < 1 or
+  bf > 0 is a boundary problem before it is physics. Every tip/wall/
+  profile number from before this change sat on that floor.
+- **Monitor pattern for inlet starvation is `mdot_in=0\.00[0-4]|mdot_in=
+  0\.0050`**, NOT `0\.00[0-5]` (that matches the healthy 0.00599 and
+  fired on step 0). Dry-test against a healthy log: 0 hits.
+- **`1.0 * int_const` in a float comparison silently fails** (selftest
+  check 39 hit it with `1.0 * mp_nrm2`); write the float literal.
 - **The wall sink conducts with the cell's own kappa** (2026-09-02):
   `wall_kappa n a t`, ln(Lambda) shared with eta via `eos_lnl`. The
   constant kappa_wall = 1 filled the chamber overnight (P_wall 90% of
