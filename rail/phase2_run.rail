@@ -23,6 +23,9 @@ import "rail/mpd_solver.rail"
 foreign time t
 
 run_hall = 0.0
+-- 1.0: cathode is an ideal conductor, the surface split is SOLVED
+-- (2026-09-03); 0.0: prescribed linear split with pbt_phi at the tip
+run_free_cath = 1.0
 run_jtot = 8000.0
 run_nsteps = 20000
 print_every = 2000
@@ -189,6 +192,8 @@ main =
   let jt = 0.0 + run_jtot
   let m = mp_build_mask
   let btp = mp_build_btp jt
+  let fc = 0.0 + run_free_cath
+  let _ = mp_set_free_cath btp fc
   let st0 = mv_init jt
   let ns0 = mv_init jt
   let rs = 0.0 + run_resume
@@ -204,6 +209,7 @@ main =
   let _ = float_arr_set aux 2 0.0
   let _ = float_arr_set aux 3 (to_float (time 0))
   let _ = print (cat ["phase2 run: J=", show (to_int jt), " A, hall=", show_float run_hall,
+                      ", free_cath=", show_float fc,
                       ", steps=", show run_nsteps, ", dt0=", show_float dt0])
   let stf = run_loop st0 ns0 aux btp m fb scr run_nsteps
   let _ = mv_apply_ghosts stf btp m

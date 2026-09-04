@@ -31,7 +31,7 @@ re-measure (published numbers lag the work).
 ```bash
 cd ~/projects/mpd-attachment
 RAIL=~/projects/rail-public/rail_native        # Studio (Mini: ~/projects/rail/rail_native)
-$RAIL run rail/selftest.rail                   # 39 checks; grep the last line, exit code lies
+$RAIL run rail/selftest.rail                   # 41 checks; grep the last line, exit code lies
 ```
 - Checks 22-25 lock the implicit Thomas operator (22 is boundary-order
   by design, do NOT "fix" it to exact). Check 26 is the mass gate: one
@@ -53,7 +53,11 @@ $RAIL run rail/selftest.rail                   # 39 checks; grep the last line, 
   branches: subsonic outflow carries amb_p, supersonic zero-gradient,
   backflow ambient at rest; bt negated) and `mv_exit_probe` (mass-flux-
   weighted exit Mach, backflow count, min exit p); the old zero-gradient
-  ghost fails it.
+  ghost fails it. Checks 40-41 lock the FREE cathode (btp slot 0 = 1.0):
+  tip ghost copies the fluid B, barrel ghost carries B_f r_f / r_g, the
+  corner takes the tip form, slot 0 = 0.0 restores 2 face - fluid; and
+  the Neumann fold `mv_tri_neu_l` is EXACT (1e-12) on c/r and on a
+  z-uniform line where the Dirichlet fold is only boundary-order (7e-4).
 - Run the selftest FROM THE REPO DIR (imports resolve relative to cwd;
   from elsewhere it dies in ld with `_run_hall` undefined).
 - After a converged run, the standing gate: `phase2_massaudit`'s
@@ -85,6 +89,18 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
 ```
 
 ## Standing traps (hard-won, do not relearn)
+
+- **The cathode is a FREE ideal conductor (2026-09-03, `run_free_cath =
+  1.0`).** Anode, backplate, wall and inlet faces stay prescribed
+  (mp_build_btp); the cathode faces are E_t = 0 with no sheath, which
+  with zero normal velocity is eta j_t = 0: barrel j_z = 0 (d(rB)/dr = 0)
+  and tip j_r = 0 (dB/dz = 0). Backplate face pins J at the root, axis
+  pins 0, so J still enters the cathode; WHERE along the surface is now
+  the solution (read I_enc(z) from B at j = 20 in the state csv). Every
+  tip/wall/profile number before this sat on the prescribed 80/20
+  linear split with the pressure maximum at the cathode ROOT. Set
+  run_free_cath = 0.0 to reproduce the prescribed model; never edit the
+  split in mhd_pbt to "tune" attachment.
 
 - **`$RAIL run file.rail` compiles AND RUNS it in the current dir.** For
   phase2_run.rail that means a full 20k-step segment resuming from

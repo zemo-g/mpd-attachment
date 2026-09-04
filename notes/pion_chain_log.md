@@ -978,3 +978,129 @@ model (sigma_en(T_e), sheath-limited sink) would act; that is item 2 of
 the ranked list and it is also a uniqueness question, not only an
 accuracy one. Chains done; outputs stay in /tmp/run_exit_*/out
 (ckpt_seg1-12, state_seg1-12). No processes running.
+
+### 2026-09-03 11:55: cathode split FREED (owner: "go ahead"), chain running
+
+Model change (rail/mpd_solver.rail, mhd_pbt.rail, phase2_run.rail):
+the cathode is an ideal conductor with no sheath. E_t = 0 on the
+surface with zero normal velocity gives eta j_t = 0, so the barrel
+carries j_z = 0 (d(rB)/dr = 0, ghost B = B_f r_f / r_g = B_f 19.5/18.5)
+and the tip carries j_r = 0 (dB/dz = 0, ghost B = B_f). The implicit
+resistive sweeps fold these as Neumann ends (`mv_tri_neu_l scr fac`:
+diag += a0 fac, a0 = 0, rhs unchanged; fac 1 on z-lines, r_j/r_{j-1}
+on r-lines so the inner-face flux cancels exactly). Anode, backplate,
+wall and inlet stay prescribed; the backplate face pins J at the root
+and the axis pins 0, so the total into the cathode is still J and only
+its distribution along the surface is free. Flag: btp slot 0 (cell
+(0,0), mask 3, otherwise unused) via `mp_set_free_cath`; runner knob
+`run_free_cath` (1.0). The tip-corner ghost (19,80) serves two faces
+and keeps the tip form (same class as the known corner mass leak).
+
+Gates: selftest 39/39 before, 41/41 after. Check 40 locks the three
+ghost forms and the prescribed fallback; check 41 locks the Neumann
+fold EXACT to 1e-12 on c/r (the Dirichlet fold is 7e-4 off on the same
+line, check 22 is boundary-order by design) and on a z-uniform line.
+
+Smoke (400 steps, 8.6 us, from fromA seg 12): dt 2.08e-8 steady, no
+dt dip, mdot_out 6.14e-3, T_exh 19.15 -> 20.01 N, tip p 1104 -> 1671,
+wall 840 unchanged, cathode root 2258. I_enc(z) at j = 20 already moved
+from the prescribed line (i=40: 4866 A) toward the tip (i=40: 7090 A,
+tip share 0.15 -> 0.17); the surface current is walking down the barrel
+toward the tip on the resistive time. Direction is right; the plateau
+decides.
+
+RUNNING since 11:55: /tmp/run_free_fromA, binary /tmp/p2free, 8
+segments from /tmp/run_exit_fromA/out/ckpt_seg12.f32. Judge at the
+plateau: I_enc(z) along the barrel (where does J enter: tip vs root),
+tip p vs 2104, wall vs 465, profile rms, thrust vs 24.6, M_exit >= 1,
+bf 0, massaudit (rebuild /tmp/p2a from the new solver first). If the
+tip share saturates below ~0.5 with the pressure max still at the root,
+the missing piece is the sheath (Phase 3), not the split.
+
+### 2026-09-04 00:30: free-cathode chain JUDGED at seg 12 (seg 13-16 still running)
+
+Trend (step 18000 of each segment; mass kg, p Pa, mdot kg/s, N):
+
+| seg | mass | ptip(10,81) | pwall | mdot_out | V_arc | T_exh |
+|---|---|---|---|---|---|---|
+| outlet 12 | 1.635e-6 | 1104 | 840 | 5.97e-3 | 21.3 | 19.15 |
+| 1 | 1.956e-6 | 833 | 441 | 3.54e-3 | 18.9 | 13.36 |
+| 3 | 2.844e-6 | 980 | 679 | 4.27e-3 | 19.7 | 15.16 |
+| 5 | 3.378e-6 | 1040 | 883 | 5.00e-3 | 20.5 | 16.62 |
+| 7 | 3.687e-6 | 1088 | 994 | 5.37e-3 | 20.9 | 17.41 |
+| 9 | 3.83e-6 | 1132 | 1072 | 5.65e-3 | 21.0 | 18.00 |
+| 10 | 3.903e-6 | 1142 | 1090 | 5.72e-3 | 21.1 | 18.19 |
+| 11 | 3.936e-6 | 1141 | 1104 | 5.78e-3 | 21.1 | 18.32 |
+| 12 | 3.959e-6 | 1138 | 1114 | 5.81e-3 | 21.2 | 18.38 |
+
+Increments shrink geometrically (mass +0.8, +0.6%/seg; wall +13, +9;
+tip flat since seg 10): plateau to ~2% at seg 12, massaudit net dm/dt
+1.0e-4 kg/s (1.7% of inflow) still filling. dt steady 1.08e-8, exit
+choked (M_exit 1.07, bf 0, p_exit 12 Pa), no starvation, no faults.
+
+ATTACHMENT (the program's question): freed, the current LEAVES the
+barrel for the tip. Tip-face share of J 0.15 -> 0.29 (fixed since
+seg 1, i.e. set on the resistive time, ~10 us); of the barrel current,
+50% enters in the last 1.3 cm (z > 8.7 cm) where the prescribed line
+had 50% by 5.3 cm; the last 1 cm of barrel carries 31% of J, so 60% of
+J attaches within 1 cm of the tip (prescribed: 33%). Peak |j| 1.8e7
+A/m^2 at the tip corner (r 0.97, z 9.94). Pressure MAXIMUM moved from
+the cathode root (outlet: 2663 Pa at r 1.1, z 0.8 cm) to the axis 0.5
+cm past the tip: 3303 Pa (Cory tip 2104, +57%). The tip-face cell
+(10,81) that the step line calls ptip reads 1138 (-46% vs 2104); the
+pinch sits just downstream of the face, not on it. Hottest 1% of
+volume carries 26% of Ohmic (was 18%), 45% of Ohmic is downstream of
+the tip plane, V_arc 22.6 V (181 kW). The axis core leaves the exit at
+54 kK and 4.3 km/s. The prescribed-split verdict rule (tip share < 0.5
+AND p max at the root => sheath) does NOT fire: the max is at the tip.
+
+CHAMBER (the cost): with the current at the tip the exit throughput at
+the old inventory dropped to 3.5 g/s, and the chamber refilled 2.4x
+(mass 1.64 -> 3.96e-6) until 6 g/s passes again. Every backplate number
+rose with it: wall 1114 (2.4x Cory 465; was 1.8x), root 2827 (was
+1948), profile rms 0.50 (was 0.29; ratio 1.7 at r_c, 0.94-1.04 at 3.0-
+3.4 cm, 1.6-2.3 on the outer shelf 1250 -> 1114 Pa). Thrust 18.4 N (was
+19.2; Cory ~24.6): exit u_mean 2.1 km/s vs Cory's 4.1. The floor is the
+exit condition: a choked 6 g/s at T_exit 12 kK needs rho ~2e-4 at the
+exit, p ~700 there and ~1100-1250 in the reservoir. The wall excess IS
+the exhaust-velocity deficit; it is the same reservoir/exit problem
+seen on the outlet chain, not an attachment problem any more. The
+outer 1 cm annulus at the exit is a cold sheet (2000 K, 620 m/s, rho
+1e-3) carrying 18% of the mass.
+
+Massaudit (/tmp/p2a_free on ckpt_seg12): GATE PASS 7.0e-12; cathode
+ghost leak -8.5e-5 kg/s = 1.4% of inflow (was 0.4%), anode +6e-6. The
+corner ghost (19,80) serving two faces now sits under the pinch; the
+leak scales with it. Known class, now worth fixing (single-face corner
+treatment) before the next accuracy claim.
+
+Verdict: freeing the split did what it was for (attachment at the tip,
+pinch downstream of the tip, Cory's picture). The remaining error is
+the reservoir/exit: chamber pressure floor 2.4x with thrust -25%.
+Ranked next (owner call):
+1. Exit/exhaust: why u_exit is 2.1 not 4.1 km/s at 8 kA (EM thrust
+   Maecker ~15.6 N is in hand; the gas-dynamic part and the plume
+   expansion past z = 12.94 cm are not). Domain length / where Cory's
+   thrust plane sits; the pressure thrust 6.2 N at our exit plane is
+   unconverted.
+2. Reservoir/wall sheet: sigma_en(T_e), sheath-limited sink; the cold
+   dense annulus carries 18% of mdot at 620 m/s.
+3. Cathode corner ghost leak 1.4% (two faces, one ghost).
+4. Sheath BC at the cathode (Phase 3) only if 1-3 leave the tip wrong.
+Images out/img/phase2_A_free_seg12_{hero,fields,current,alpha}.png;
+state/ckpt out/*A_free_seg12*; chain outputs /tmp/run_free_fromA/out.
+
+### 2026-09-04 04:30: free-cathode chain closed at seg 16
+
+| seg | mass | ptip(10,81) | pwall | mdot_out | V_arc | T_exh |
+|---|---|---|---|---|---|---|
+| 13 | 3.975e-6 | 1149 | 1122 | 5.84e-3 | 21.18 | 18.41 |
+| 14 | 3.986e-6 | 1163 | 1126 | 5.86e-3 | 21.20 | 18.46 |
+| 15 | 3.994e-6 | 1144 | 1129 | 5.87e-3 | 21.20 | 18.46 |
+| 16 | 4.000e-6 | 1161 | 1132 | 5.89e-3 | 21.22 | 18.53 |
+
+Plateau: mass +0.15%/seg, wall +3 Pa/seg, tip 1144-1163 (the probe
+cell flickers), thrust 18.5 N, mdot_out closing on 6e-3 at 0.1e-3 per
+segment. The seg 12 judgement stands with plateau values wall ~1135,
+tip-face ~1155, thrust ~18.5. Final ckpt/state: /tmp/run_free_fromA/
+out/ckpt_seg16.f32, state_seg16.csv. No chain processes running.

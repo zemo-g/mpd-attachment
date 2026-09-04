@@ -13,7 +13,47 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
-## JUDGED 2026-09-03 01:30: pressure-outlet plateau (read this first)
+## JUDGED 2026-09-04 00:30: free cathode split (read this first)
+
+Full account: notes/pion_chain_log.md "2026-09-04 00:30". The split,
+freed, moves the attachment to the tip: tip-face share 0.15 -> 0.29,
+60% of J within 1 cm of the tip (was 33%), peak |j| at the tip corner,
+pressure maximum on the axis 0.5 cm past the tip at 3303 Pa (Cory tip
+2104, +57%; the tip-face probe reads 1138). That was the question and
+it is answered: Cory's picture, no sheath needed for it. The cost: the
+chamber refilled 2.4x (exit throughput fell to 3.5 g/s at the old
+inventory), so wall 1114 (2.4x Cory), root 2827, profile rms 0.50,
+thrust 18.4 N (u_exit 2.1 vs 4.1 km/s). The floor is the exit
+condition for a choked 6 g/s at 12 kK; the wall excess IS the exhaust-
+velocity deficit. Massaudit PASS 7e-12; cathode corner-ghost leak now
+1.4% of inflow (was 0.4%), worth fixing. Ranked next in the log entry:
+exit/exhaust velocity, reservoir/wall sheet, corner leak, sheath last.
+Chain CLOSED at seg 16 (04:28): wall 1132, tip 1161, thrust 18.5 N,
+mass 4.00e-6, +0.15%/seg; numbers above are seg 12, plateau to ~2%.
+
+## RUNNING NOW (2026-09-03 11:55, FREE cathode split; judged above)
+
+Owner greenlit "free the cathode split". Shipped: cathode faces are an
+ideal conductor (E_t = 0, no sheath): barrel j_z = 0, tip j_r = 0 as
+Neumann ends of the implicit sweeps; anode/backplate/wall/inlet still
+prescribed; `run_free_cath = 1.0`, selftest 41/41 (checks 40-41 new).
+Full account and smoke numbers: notes/pion_chain_log.md "2026-09-03
+11:55". Chain: /tmp/run_free_fromA (binary /tmp/p2free, 8 segs from
+the outlet fromA seg 12 checkpoint), chain.log has segment stamps,
+run_segN.log / out/ckpt_segN.f32 / out/state_segN.csv per segment.
+
+Judgement routine at the plateau (mass, tip, wall, thrust flat over
+3 segments): (1) I_enc(z) from bt at j = 20 in the state csv, tip share
+= I_enc(i=81)/8000 (prescribed model gave 0.15; smoke 0.17 after 8.6
+us); (2) tip p vs 2104, wall vs 465, compare_bp_profile rms, thrust vs
+24.6 N, M_exit >= 1, bf 0; (3) rebuild the massaudit binary from the
+new solver (`$RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out
+/tmp/p2a`), run it in the chain dir; (4) render/attachment/alpha maps
+with a `free_segN` tag; (5) write the log entry and this section.
+Uncommitted: solver, mhd_pbt, runner, selftest, CLAUDE.md, notes, this
+file. Commit only when the owner asks.
+
+## JUDGED 2026-09-03 01:30: pressure-outlet plateau (previous block)
 
 Full account: notes/pion_chain_log.md "2026-09-03 01:30". The outlet
 chains plateaued (fromA seg 6-8 flat to 0.3%): wall 841 Pa (Cory 465,
@@ -42,7 +82,7 @@ program's actual question; (2) reservoir/wall physics (sigma_en(T_e),
 cold-sheet sink) for the 1030 vs 465 outer shelf; (3) LxF global-dt
 exit dissipation only if the exit T undershoots.
 
-Housekeeping: all of 09-02 afternoon is UNCOMMITTED (solver, selftest
+Housekeeping: 09-02 afternoon + 09-03 judgement COMMITTED as 4739c01 (solver, selftest
 39, runner, CLAUDE.md, notes, assistant files); commit only when asked.
 The kT chains' outputs remain in /tmp/run_kT_*; the old nosink state is
 out/phase2_state_A_nosink_seg8.csv. out/phase2_state.csv = fromA seg8.

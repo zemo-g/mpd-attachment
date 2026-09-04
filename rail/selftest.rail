@@ -448,12 +448,71 @@ main =
              else false else false else false
   let ok39 = if ok39a then if ok39b then if ok39c then if okbt then okpr else false else false else false else false
   let f39 = check "pressure outlet ghost (3 branches) + exit probe" ok39 f38
-  if f39 == 0 then
-    let _ = print "SELFTEST PASS (39 checks)"
+  -- (40) free-cathode ghosts (2026-09-03): with btp slot 0 = 1.0 the tip
+  -- ghost copies the fluid B (dB/dz = 0), the barrel ghost carries
+  -- B_f r_f / r_g (d(rB)/dr = 0), the corner takes the tip form; with
+  -- slot 0 = 0.0 the prescribed 2 face - fluid still holds.
+  let st40 = mv_init jt2
+  let btp40 = mp_build_btp 8000.0
+  let _ = mp_set_free_cath btp40 1.0
+  let _ = mp_put st40 mp_f_bt 10 81 0.02
+  let _ = mp_put st40 mp_f_bt 20 40 0.03
+  let _ = mp_put st40 mp_f_bt 19 81 0.015
+  let _ = mp_put st40 mp_f_bt 20 80 0.05
+  let _ = mv_apply_ghosts st40 btp40 m
+  let ratio40 = (to_float mp_j_fluid0 - 0.5) / (to_float mp_j_cath - 0.5)
+  let ok40a = mp_get st40 mp_f_bt 10 80 == 0.02
+  let ok40b = fabs (mp_get st40 mp_f_bt 19 40 / (0.03 * ratio40) - 1.0) < 0.000000000001
+  let ok40c = mp_get st40 mp_f_bt 19 80 == 0.015
+  let _ = mp_set_free_cath btp40 0.0
+  let _ = mv_apply_ghosts st40 btp40 m
+  let pres40 = 2.0 * float_arr_get btp40 (10 * mp_nz + 80) - 0.02
+  let ok40d = fabs (mp_get st40 mp_f_bt 10 80 / pres40 - 1.0) < 0.000000000001
+  let ok40 = if ok40a then if ok40b then if ok40c then ok40d else false else false else false
+  let f40 = check "free-cathode ghosts: tip copy, barrel rB, corner, prescribed A/B" ok40 f39
+  -- (41) free-cathode operator lock: the Neumann fold is EXACT on the
+  -- zero-current field c/r (check 22 is only boundary-order through the
+  -- Dirichlet fold; here the right face carries the exact ghost-mean so
+  -- only the left fold is under test) and on a z-uniform field past the
+  -- tip.
+  let _ = st_line_rinv stx 40 20
+  let _ = mv_rco stx scr2 dtbig 40 20 109 0
+  let _ = mv_tri_neu_l scr2 ((to_float 20 - 0.5) / (to_float 20 - 1.5))
+  let r128 = mp_r_of 128
+  let r129 = mp_r_of 129
+  let bdr = 0.5 * (0.001 / r128 + 0.001 / r129)
+  let _ = mv_tri_dir_r scr2 109 bdr
+  let _ = mv_thomas_fwd scr2 109 1
+  let _ = mv_rback stx scr2 40 20 108 0.0
+  let b70n = mp_get stx mp_f_bt 70 40
+  let b20n = mp_get stx mp_f_bt 20 40
+  let ok41a = fabs (b70n * r70 / 0.001 - 1.0) < 0.000000000001
+  let ok41b = fabs (b20n * mp_r_of 20 / 0.001 - 1.0) < 0.000000000001
+  let _ = st41_zfill stx 10 81
+  let _ = mv_zco stx scr2 dtbig 10 81 24 0
+  let _ = mv_tri_neu_l scr2 1.0
+  let _ = mv_tri_dir_r scr2 24 0.002
+  let _ = mv_thomas_fwd scr2 24 1
+  let _ = mv_zback stx scr2 10 81 23 0.0
+  let ok41c = fabs (mp_get stx mp_f_bt 10 81 / 0.002 - 1.0) < 0.000000000001
+  let ok41d = fabs (mp_get stx mp_f_bt 10 95 / 0.002 - 1.0) < 0.000000000001
+  let ok41 = if ok41a then if ok41b then if ok41c then ok41d else false else false else false
+  let f41 = check "free-cathode Neumann fold exact on c/r and z-uniform" ok41 f40
+  if f41 == 0 then
+    let _ = print "SELFTEST PASS (41 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f39, " of 39)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f41, " of 41)"])
     1
+
+-- uniform B = 0.002 along the z-line (j, i .. mp_nzm2) past the tip
+st41_zfill stx j i =
+  if i > mp_nzm2 then 0
+  else
+    let b = 0.002
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (amb_p / gamma_m1 + 0.5 * b * b * inv_mu0)
+    st41_zfill stx j (i + 1)
 
 st37_fill stx c ji =
   if ji >= mp_nrnz then 0

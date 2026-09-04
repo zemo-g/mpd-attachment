@@ -1,6 +1,18 @@
 -- rail/mpd_solver.rail -- Phase 2 solver: axisymmetric resistive MHD with
--- Hall term, azimuthal-only self-field B_theta, attachment PRESCRIBED as
--- B_theta Dirichlet faces (rail/mhd_pbt.rail).
+-- Hall term, azimuthal-only self-field B_theta. Anode, backplate, wall and
+-- inlet attachment PRESCRIBED as B_theta Dirichlet faces
+-- (rail/mhd_pbt.rail). The CATHODE is FREE when btp slot 0 is 1.0
+-- (mp_set_free_cath, 2026-09-03): an ideal conductor with no sheath has
+-- E_tangential = 0, and with the normal velocity zero at the face that is
+-- eta j_tangential = 0, i.e. the current enters the cathode NORMALLY.
+-- On the barrel (normal r) j_z = 0 <=> d(r B)/dr = 0; on the tip (normal
+-- z) j_r = 0 <=> dB/dz = 0. Both are Neumann conditions: the ghost is
+-- B_f r_f / r_g on the barrel and B_f on the tip, and the implicit sweeps
+-- fold a zero-flux end. The enclosed current at the cathode root is still
+-- pinned to J by the backplate face and to 0 on the axis, so all of J
+-- enters the cathode; WHERE it enters is now the solution. With slot 0
+-- at 0.0 the old prescribed split (linear barrel, pbt_phi at the tip)
+-- is used, kept for A/B and for the operator locks in the selftest.
 --
 -- Dependencies (import order in the runner, no dedupe):
 --   rail/pbt.rail, rail/mhd_pbt.rail, rail/stress_diag.rail, this file.
@@ -517,11 +529,19 @@ mv_ghost_cell st btp m j i =
     mp_put st mp_f_bt j i btg
   else if mk == 7 then mv_ghost_exit st j i
   else if mk == 1 then
+    -- cathode. Free (btp slot 0 = 1.0): Neumann, dB/dz = 0 on the tip,
+    -- d(rB)/dr = 0 on the barrel. Prescribed: Dirichlet 2 face - fluid.
+    -- The tip corner ghost (mp_j_cath, mp_i_tip) serves both a z-face and
+    -- an r-face with one value; the tip form wins (as before).
+    let free = float_arr_get btp 0 > 0.5
     if i == mp_i_tip then
-      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_tip1
+      let bf = mp_get st mp_f_bt j mp_i_tip1
+      let btg = if free then bf else 2.0 * float_arr_get btp k - bf
       mv_ghost_gas st j i j mp_i_tip1 1.0 (0.0 - 1.0) btg
     else if j == mp_j_cath then
-      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt mp_j_fluid0 i
+      let bf = mp_get st mp_f_bt mp_j_fluid0 i
+      let btg = if free then bf * (to_float mp_j_fluid0 - 0.5) / (to_float mp_j_cath - 0.5)
+                else 2.0 * float_arr_get btp k - bf
       mv_ghost_gas st j i mp_j_fluid0 i (0.0 - 1.0) 1.0 btg
     else mv_ghost_solid st btp j i
   else
@@ -951,6 +971,15 @@ mv_tri_dir_r scr n bf =
   let _ = float_arr_set scr (scr_tri_d + n - 1) (float_arr_get scr (scr_tri_d + n - 1) - 2.0 * cn * bf)
   float_arr_set scr (scr_tri_c + n - 1) 0.0
 
+-- Neumann (zero-flux) fold-in at the LEFT end, ghost = fac * cell:
+-- fac = 1 for a z-line (dB/dz = 0), r_cell / r_ghost for an r-line
+-- (d(rB)/dr = 0; a0 carries dm rm/rfm so the inner-face flux cancels
+-- exactly and the diagonal keeps only the outer face). Free cathode.
+mv_tri_neu_l scr fac =
+  let a0 = float_arr_get scr scr_tri_a
+  let _ = float_arr_set scr scr_tri_b (float_arr_get scr scr_tri_b + a0 * fac)
+  float_arr_set scr scr_tri_a 0.0
+
 mv_thomas_fwd scr n p =
   if p >= n then 0
   else
@@ -999,7 +1028,10 @@ mv_zscan ns btp m scr dt j i =
     let i1 = mv_zrun m j i
     let n = i1 - i + 1
     let _ = mv_zco ns scr dt j i n 0
-    let _ = mv_tri_dir_l scr (float_arr_get btp (j * mp_nz + i - 1))
+    -- left end on a cathode tip cell with the cathode free: Neumann
+    let lfree = if float_arr_get btp 0 > 0.5 then arr_get m (j * mp_nz + i - 1) == 1 else false
+    let _ = if lfree then mv_tri_neu_l scr 1.0
+            else mv_tri_dir_l scr (float_arr_get btp (j * mp_nz + i - 1))
     let _ = mv_tri_dir_r scr n (float_arr_get btp (j * mp_nz + i1 + 1))
     let _ = mv_thomas_fwd scr n 1
     let _ = mv_zback ns scr j i (n - 1) 0.0
@@ -1012,7 +1044,11 @@ mv_rscan ns btp m scr dt i j =
     let j1 = mv_rrun m i j
     let n = j1 - j + 1
     let _ = mv_rco ns scr dt i j n 0
-    let _ = if j == 1 then 0.0 else mv_tri_dir_l scr (float_arr_get btp ((j - 1) * mp_nz + i))
+    -- left end on the cathode barrel with the cathode free: Neumann on rB
+    let lfree = if float_arr_get btp 0 > 0.5 then arr_get m ((j - 1) * mp_nz + i) == 1 else false
+    let _ = if j == 1 then 0.0
+            else if lfree then mv_tri_neu_l scr ((to_float j - 0.5) / (to_float j - 1.5))
+            else mv_tri_dir_l scr (float_arr_get btp ((j - 1) * mp_nz + i))
     let _ = mv_tri_dir_r scr n (float_arr_get btp ((j1 + 1) * mp_nz + i))
     let _ = mv_thomas_fwd scr n 1
     let _ = mv_rback ns scr i j (n - 1) 0.0

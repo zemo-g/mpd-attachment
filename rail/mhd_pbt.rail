@@ -208,3 +208,9 @@ mp_build_btp jtot =
   let btp = float_arr_new mp_nrnz 0.0
   let _ = mp_build_btp_loop btp jtot 0
   btp
+
+-- Free-cathode flag lives in btp slot 0 (cell (0,0): axis-row corner,
+-- never a face of any fluid cell, so the slot is otherwise unused).
+-- 1.0: the solver treats cathode faces as an ideal conductor (Neumann,
+-- see rail/mpd_solver.rail header); 0.0: the prescribed split above.
+mp_set_free_cath btp flag = float_arr_set btp 0 flag
