@@ -170,8 +170,8 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   mass flow regardless of downstream pressure. The face now carries
   rho_in v_in, rho_in v_in^2 + p_in, (e_in + p_in) v_in in every regime.
   **Read `mdot_in`, never the nominal**, and arm every run monitor with
-  `mdot_in=0\.00[0-5]` (dry-test the pattern against an old log first:
-  ws30 has 6 hits). A counter nobody reads is not a counter.
+  the corrected starvation pattern above (dry-test it against a healthy
+  log first: 0 hits). A counter nobody reads is not a counter.
 - **The massaudit gate self-checks now.** It was a COPY of the face
   formula, so it silently audited the OLD scheme after the inlet
   changed (0.211 kg/s at the inlet). It now takes one real mv_step and
@@ -188,16 +188,3 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   limiter dt < c * e_int / (eta j^2)).
 - stdlib mhd_mpd.rail double-counts Lorentz and has the wrong B_theta
   axial flux sign; rail/mpd_solver.rail is the corrected reference.
-
-## Physics state in one paragraph (2026-09-01)
-
-Conservation is machine-exact (interior creates nothing, metered
-inlet, gas-prefill start). The Saha EOS is in; the ionization-sink
-hypothesis for the +29% tip over-pressure was REFUTED (pinch pressure
-is momentum balance vs J^2). The alpha map showed the real defect: a
-uniform capped eta kept the arc at 7 kW Ohmic vs a ~400 kW real arc,
-cold (9200 K max) and neutral (alpha < 3.5%). Now running: partially
-ionized eta (Spitzer + electron-neutral via the Saha alpha, caps
-numeric-only) so arc constriction, the attachment mechanism itself,
-can emerge. Judgment at the plateau: tip/wall/profile/thrust vs Cory
-AND whether current constricts onto the cathode tip.
