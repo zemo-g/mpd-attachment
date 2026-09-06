@@ -116,9 +116,24 @@ s_outer = pi_f * (pbt_r_ao * pbt_r_ao - pbt_r_a * pbt_r_a)
 rudolph_j_i j = (if j < pbt_j_t1 then j else pbt_j_t1) / s_inner
 rudolph_j_o j = (if j > pbt_j_t2 then j - pbt_j_t2 else 0.0) / s_outer
 
--- Cory 1971 pressure fits (N/m^2), argon 6 g/s
+-- Cory 1971 pressure fit (N/m^2), argon 6 g/s: MEASURED at the chamber
+-- wall on the backplate (IEPC-97-121 eq 27, fig 4, data from ~7 kA up)
 cory_p_rch j = 0.00065 * j * sqrt j
+-- Cathode-tip pressure, IEPC-97-121 eq 28: "from current density
+-- measurements and momentum balance considerations [Rudolph]". INFERRED,
+-- linear in J, validity at 8 kA unstated. Not a Cory probe reading
+-- (audit 2026-09-05 finding 5); name kept for the call sites.
 cory_p_tip j = 0.263 * j
+
+-- Measured thrust at the Phase 2 operating point (argon 6 g/s, 8 kA),
+-- 2026-09-05: the Table 2 Ar-6 fit is only valid from 11 kA, so the
+-- 8 kA target is the fig-1 digitized 6 g/s points at 7195 A (C_T 4.176)
+-- and 8172 A (C_T 3.664), interpolated linearly in J; the error bar is
+-- sigma_dig on that C_T (pixel readout + 3%). The "~24.6 N" in the
+-- 2026-09-02/04 log entries had no derivation; this is the number.
+fig1_ct_ar6_8ka = 3.664 + (4.176 - 3.664) * (8172.0 - 8000.0) / (8172.0 - 7195.0)
+thrust_meas_ar6_8ka = mu0_4pi * fig1_ct_ar6_8ka * 64000000.0
+thrust_meas_sigma_8ka = mu0_4pi * sigma_dig (0.0 + fig1_ct_ar6_8ka) * 64000000.0
 
 -- list helper (no lambdas in filter/map: named recursion only)
 nth n xs = if n == 0 then head xs else nth (n - 1) (tail xs)

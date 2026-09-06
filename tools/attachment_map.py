@@ -102,8 +102,21 @@ a_f = np.maximum(al, 1e-8)
 t_eV = np.maximum(tt / 11604.518, 0.1)
 n_e_cm3 = np.maximum(a_f * rho / M_AR, 1.0) * 1e-6
 lnlam = np.clip(23.0 - np.log(np.sqrt(n_e_cm3) / (t_eV ** 1.5)), 2.0, 20.0)
-eta_ei = 5.2e-5 * lnlam / (t_eV * np.sqrt(t_eV))
-eta_en = 2.2046e-8 * np.sqrt(np.maximum(tt, 0.0)) * (1.0 - a_f) / a_f
+# 2026-09-05: transverse Spitzer (Braginskii bracket on the Hall parameter)
+# and the Maxwellian-averaged sigma_en(T) table, mirroring mv_eta_calc
+_SIG_T = np.array([0.03, 0.05, 0.1, 0.2, 0.3, 0.5, 0.7, 1.0, 1.5, 2.0, 3.0, 5.0, 7.0, 10.0])
+_SIG_S = np.array([2.512, 1.594, 0.768, 0.577, 0.816, 1.604, 2.521, 3.932, 6.101, 7.891, 10.342, 12.242, 12.313, 11.429])
+def sig_en(t_ev):
+    return np.exp(np.interp(np.log(np.clip(t_ev, _SIG_T[0], _SIG_T[-1])), np.log(_SIG_T), np.log(_SIG_S)))
+n_f = rho / M_AR
+nu_ei = 2.91e-12 * a_f * n_f * lnlam / (t_eV * np.sqrt(t_eV))
+t_ev_raw = np.maximum(tt, 0.0) / 11604.518
+nu_en = (1.0 - a_f) * n_f * sig_en(t_ev_raw) * 1e-20 * np.sqrt(np.maximum(tt, 0.0) * 3.4788e7)
+hall_x = 1.758820e11 * np.abs(F["bt"][sj, si]) / (nu_ei + nu_en)
+x2 = hall_x * hall_x
+perp_fac = (1.0 - (6.416 * x2 + 1.837) / (x2 * x2 + 14.79 * x2 + 3.7703)) / 0.5127708670
+eta_ei = 5.2e-5 * lnlam / (t_eV * np.sqrt(t_eV)) * perp_fac
+eta_en = 2.2046e-8 * np.sqrt(np.maximum(tt, 0.0)) * (1.0 - a_f) / a_f * sig_en(t_ev_raw) * 0.1
 eta = np.clip(eta_ei + eta_en, ETA_FLOOR, ETA_CAP)
 # legacy coefficient (ln(Lambda) = 0.96, pre 2026-09-01 late) for comparison
 eta_legacy = np.clip(5.0e-5 / (t_eV * np.sqrt(t_eV)) + eta_en, ETA_FLOOR, ETA_CAP)

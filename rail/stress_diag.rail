@@ -34,6 +34,9 @@ sd_ghost_cell bt btp m j i =
   else if mk == 7 then
     let fl = float_arr_get bt (j * mp_nz + mp_nzm2)
     float_arr_set bt k (2.0 * float_arr_get btp k - fl)
+  else if mk == 8 then
+    let fl = float_arr_get bt (mp_nrm2 * mp_nz + i)
+    float_arr_set bt k (2.0 * float_arr_get btp k - fl)
   else if mk == 1 then
     -- cathode: tip row faces fluid above in z; side column faces j+1
     if i == mp_i_tip then
@@ -144,6 +147,10 @@ sd_surface_integral bt m =
 
 -- ── gasdynamic per-surface sums: -oint p (z.dS) over the same faces ──
 -- p taken from the adjacent fluid cell (first order). Same slot layout.
+-- IDEAL-EOS ONLY (mp_pressure_of): under the Saha EOS this books
+-- ionization energy as pressure. The runners use mv_pressure_surfaces
+-- in mpd_solver.rail since 2026-09-05; kept for the analytic-field
+-- checks that predate the EOS.
 sd_p_cell st m j i acc =
   let k = j * mp_nz + i
   if arr_get m k == 0 then

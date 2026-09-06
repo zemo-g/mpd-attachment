@@ -186,7 +186,7 @@ main =
       print "  resumed from out/phase2_ckpt.f32"
     else 0
   let fb = float_arr_new 42 0.0
-  let scr = float_arr_new 55641 0.0
+  let scr = float_arr_new 55647 0.0
   let aux = float_arr_new 8 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0
@@ -214,7 +214,7 @@ main =
   let _ = print (cat ["    refs:    BP=", show_float bp_ref, " AIF=", show_float aif_ref])
 
   -- check 3 (pinching split) + thrust bookkeeping
-  let pg = sd_pressure_surfaces stf m
+  let pg = mv_pressure_surfaces stf m
   let _ = print (cat ["    pinching: BP=", show_float (float_arr_get pg 0),
                       " CT=", show_float (float_arr_get pg 1),
                       " AIF=", show_float (float_arr_get pg 2),

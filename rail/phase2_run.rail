@@ -26,6 +26,9 @@ run_hall = 0.0
 -- 1.0: cathode is an ideal conductor, the surface split is SOLVED
 -- (2026-09-03); 0.0: prescribed linear split with pbt_phi at the tip
 run_free_cath = 1.0
+-- 1.0: anode bore/inner/outer faces are an ideal conductor, the anode
+-- split is SOLVED (2026-09-05); 0.0: Rudolph's prescribed split
+run_free_anode = 1.0
 run_jtot = 8000.0
 run_nsteps = 20000
 print_every = 2000
@@ -37,18 +40,53 @@ two_pi = 6.283185307179586
 
 total_mass st m = 1.0 * mv_total_mass st m
 
--- outflow mass rate and exhaust thrust at fluid row i = mp_nzm2
+-- outflow mass rate and exhaust thrust at the exit FACE (2026-09-05:
+-- the face carries the choked / expanded state from mv_exit_state on
+-- outflow cells, which is what the scheme transmits; the cell values
+-- differ while the exit relaxes). Backflow cells use the cell values.
 outflow_sums st j accm acct =
   if j > mp_nrm2 then 0
   else
     let rho = mp_get st mp_f_rho j mp_nzm2
     let rho_safe = if rho < rho_floor then rho_floor else rho
     let mz = mp_get st mp_f_mz j mp_nzm2
-    let p = mv_pressure st j mp_nzm2
     let da = two_pi * mp_r_of j * mp_dr
-    let _ = float_arr_set accm 0 (float_arr_get accm 0 + mz * da)
-    let _ = float_arr_set acct 0 (float_arr_get acct 0 + (mz * mz / rho_safe + p) * da)
+    let _ = if mz > 0.0 then
+        let ex = float_arr_new 4 0.0
+        let _ = mv_exit_state st j mp_nzm2 ex
+        let rf = float_arr_get ex 0
+        let uf = float_arr_get ex 1
+        let pf = float_arr_get ex 2
+        let _ = float_arr_set accm 0 (float_arr_get accm 0 + rf * uf * da)
+        float_arr_set acct 0 (float_arr_get acct 0 + (rf * uf * uf + pf) * da)
+      else
+        let p = 1.0 * mv_pressure st j mp_nzm2
+        let _ = float_arr_set accm 0 (float_arr_get accm 0 + mz * da)
+        float_arr_set acct 0 (float_arr_get acct 0 + (mz * mz / rho_safe + p) * da)
     outflow_sums st (j + 1) accm acct
+
+-- mass and z-momentum leaving through the open radial boundary (mask 8,
+-- 2026-09-05): fluid column j = mp_nrm2 for i past the anode outer
+-- face; the thrust is the z-momentum flux through ALL open boundaries
+side_sums st m i accm acct =
+  if i > mp_nzm2 then 0
+  else
+    let _ = if arr_get m (mp_nrm1 * mp_nz + i) == 8 then
+        let rho = mp_get st mp_f_rho mp_nrm2 i
+        let rho_safe = if rho < rho_floor then rho_floor else rho
+        let mr = mp_get st mp_f_mr mp_nrm2 i
+        let vz = mp_get st mp_f_mz mp_nrm2 i / rho_safe
+        let da = two_pi * (mp_r_of mp_nrm2 + 0.5 * mp_dr) * mp_dz
+        if mr > 0.0 then
+          let ex = float_arr_new 4 0.0
+          let _ = mv_out_state st mp_nrm2 i mp_f_mr ex
+          let rf = float_arr_get ex 0
+          let uf = float_arr_get ex 1
+          let _ = float_arr_set accm 0 (float_arr_get accm 0 + rf * uf * da)
+          float_arr_set acct 0 (float_arr_get acct 0 + rf * uf * vz * da)
+        else 0.0
+      else 0.0
+    side_sums st m (i + 1) accm acct
 
 -- main integration loop; aux: [0]=dt, [1]=t, [2]=steps-since-dt-recompute
 -- aux: [0]=dt, [1]=t, [2]=dt-recompute counter. The floor mass
@@ -77,6 +115,9 @@ run_loop st ns aux btp m fb scr n =
         let am = float_arr_new 1 0.0
         let at = float_arr_new 1 0.0
         let _ = outflow_sums ns 1 am at
+        let sm = float_arr_new 1 0.0
+        let stt = float_arr_new 1 0.0
+        let _ = side_sums ns m 1 sm stt
         -- ghosts on ns before measuring: mv_step applies them to st, so
         -- ns's ghost row is one step stale without this
         let _ = mv_apply_ghosts ns btp m
@@ -104,6 +145,13 @@ run_loop st ns aux btp m fb scr n =
         let pohm = if dtw > 0.0 then (oj - float_arr_get aux 6) / dtw else 0.0
         let _ = float_arr_set aux 6 oj
         let varc = pohm / run_jtot
+        -- energy diagnostics (2026-09-05): total energy inventory and the
+        -- implicit resistive step's net magnetic-energy delivery, so
+        -- dE/dt can be read against P_ohm - P_wall + P_impl + boundary
+        let etot = 1.0 * mv_total_energy ns m
+        let dj = float_arr_get scr scr_dme
+        let pimp = if dtw > 0.0 then (dj - float_arr_get aux 7) / dtw else 0.0
+        let _ = float_arr_set aux 7 dj
         let sdone = run_nsteps - n
         let el = time 0 - to_int (float_arr_get aux 3)
         let msps = if sdone > 0 then el * 1000 / sdone else 0
@@ -113,8 +161,12 @@ run_loop st ns aux btp m fb scr n =
                     "  vmax=", show_float vmax, "  ptip=", show_float ptip,
                     "  pwall=", show_float pw, "  mdot_in=", show_float mdin,
                     "  mdot_out=", show_float (float_arr_get am 0),
+                    "  mdot_side=", show_float (float_arr_get sm 0),
+                    "  T_side=", show_float (float_arr_get stt 0),
                     "  P_wall=", show_float pww,
                     "  V_arc=", show_float varc,
+                    "  E_tot=", show_float etot,
+                    "  P_impl=", show_float pimp,
                     "  M_exit=", show_float mexit,
                     "  bf=", show (to_int (float_arr_get ex 2)),
                     "  p_exit=", show_float (float_arr_get ex 3),
@@ -194,6 +246,8 @@ main =
   let btp = mp_build_btp jt
   let fc = 0.0 + run_free_cath
   let _ = mp_set_free_cath btp fc
+  let fa = 0.0 + run_free_anode
+  let _ = mp_set_free_anode btp fa
   let st0 = mv_init jt
   let ns0 = mv_init jt
   let rs = 0.0 + run_resume
@@ -202,14 +256,14 @@ main =
       print "  resumed from out/phase2_ckpt.f32"
     else 0
   let fb = float_arr_new 42 0.0
-  let scr = float_arr_new 55641 0.0
+  let scr = float_arr_new 55647 0.0
   let aux = float_arr_new 8 0.0
   let dt0 = mv_dt st0 m
   let _ = float_arr_set aux 0 dt0
   let _ = float_arr_set aux 2 0.0
   let _ = float_arr_set aux 3 (to_float (time 0))
   let _ = print (cat ["phase2 run: J=", show (to_int jt), " A, hall=", show_float run_hall,
-                      ", free_cath=", show_float fc,
+                      ", free_cath=", show_float fc, ", free_anode=", show_float fa,
                       ", steps=", show run_nsteps, ", dt0=", show_float dt0])
   let stf = run_loop st0 ns0 aux btp m fb scr run_nsteps
   let _ = mv_apply_ghosts stf btp m
@@ -231,7 +285,7 @@ main =
   let _ = print (cat ["    refs:    BP=", show_float bp_ref, " AIF=", show_float aif_ref])
 
   -- check 3 (pinching split) + thrust bookkeeping
-  let pg = sd_pressure_surfaces stf m
+  let pg = mv_pressure_surfaces stf m
   let _ = print (cat ["    pinching: BP=", show_float (float_arr_get pg 0),
                       " CT=", show_float (float_arr_get pg 1),
                       " AIF=", show_float (float_arr_get pg 2),
@@ -240,10 +294,16 @@ main =
   let accm = float_arr_new 1 0.0
   let acct = float_arr_new 1 0.0
   let _ = outflow_sums stf 1 accm acct
-  let mdot_out = float_arr_get accm 0
-  let t_ex = float_arr_get acct 0
-  let _ = print (cat ["  mdot_out=", show_float mdot_out, " kg/s (in 0.006)   T_exhaust=",
-                      show_float t_ex, " N"])
+  let sidem = float_arr_new 1 0.0
+  let sidet = float_arr_new 1 0.0
+  let _ = side_sums stf m 1 sidem sidet
+  let mdot_out = float_arr_get accm 0 + float_arr_get sidem 0
+  let t_ex = float_arr_get acct 0 + float_arr_get sidet 0
+  let _ = print (cat ["  mdot_out=", show_float mdot_out, " kg/s (in 0.006; exit plane ",
+                      show_float (float_arr_get accm 0), " + side ", show_float (float_arr_get sidem 0),
+                      ")   T_exhaust=", show_float t_ex, " N (exit plane ", show_float (float_arr_get acct 0),
+                      " + side ", show_float (float_arr_get sidet 0), ")  (measured ", show_float thrust_meas_ar6_8ka,
+                      " +- ", show_float thrust_meas_sigma_8ka, " N, fig-1 digitized)"])
   let t_end = float_arr_get aux 1
   let fmass = float_arr_get scr scr_fmass
   let _ = print (cat ["  floor mass budget: ", show_float fmass, " kg over ",

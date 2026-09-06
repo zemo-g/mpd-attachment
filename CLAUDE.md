@@ -90,6 +90,32 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
 
 ## Standing traps (hard-won, do not relearn)
 
+- **2026-09-05 audit resolutions (read notes/audit_2026-09-05.md and the
+  2026-09-05 entry of notes/pion_chain_log.md before touching any of
+  these).** (1) The exit face (`mv_face_zout`) and the open radial
+  boundary past the anode (mask 8, `mv_face_rout`) carry the choked or
+  expanded face state from `mv_out_state`, with NO LxF jump; the
+  runner's `mdot_out` / `T_exhaust` read the face (exit plane + side).
+  `M_exit=` is the exit CELL Mach and reads ~0.95-1.05 by construction
+  now; it is no longer the boundary-health signal (p_exit is). (2) Solid
+  faces (masks 1/2/4/5) carry no B and no energy in the hyperbolic step
+  (`mv_face_solid`); the wall force keeps the pair form. (3) The three
+  corner ghosts get per-face mirror states (`mv_face_rcorner`,
+  `mv_face_zcorner_in/out`); electrode families in the massaudit are 0.
+  (4) j = 129 is mask 8 for z past the anode outer face: no wall, no
+  sink there. (5) `mv_eta_calc` is the Braginskii TRANSVERSE Spitzer on
+  the Hall parameter `eos_hall_x` plus the e-n term on the Maxwellian
+  averaged `eos_sig_en(T)`; `wall_kappa n a t b` takes |B|. (6) The
+  ANODE is free (`run_free_anode = 1.0`, btp slot 1): bore d(rB)/dr = 0,
+  faces dB/dz = 0, `mv_tri_neu_r`. (7) `mv_step` = `mv_step_res` then
+  `mv_step_hyp`; the mass gate reads the boundary rate AFTER the
+  resistive phase (the exit face depends on p). (8) The step line prints
+  `E_tot=` and `P_impl=` (scr_dme); the thrust target is
+  `thrust_meas_ar6_8ka` 24.0 +- 0.9 N (fig-1 digitized; "24.6" was
+  never derived); tip 2104 and root 1662 are INFERRED, not Cory data.
+  Every number from before 2026-09-05 sat on the cfl-dependent scheme:
+  cfl 0.15 moved wall/tip/V_arc/P_wall by 10-16% on the old model.
+
 - **The cathode is a FREE ideal conductor (2026-09-03, `run_free_cath =
   1.0`).** Anode, backplate, wall and inlet faces stay prescribed
   (mp_build_btp); the cathode faces are E_t = 0 with no sheath, which
@@ -109,7 +135,7 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
   /tmp/rail_out ...` (as the recipes above do) and run them in their
   own working dir. Bit 2026-09-01 late: guard ckpt restored from
   /tmp/ckpt_guard.f32.
-- **The outflow is a PRESSURE OUTLET (mv_ghost_exit, 2026-09-02).** The
+- **The outflow ghost (mv_ghost_exit, 2026-09-02) is superseded at the face by mv_face_zout (2026-09-05, above); the ghost still feeds the sweeps and the backflow branch.** History: The
   old mask-7 ghost was a zero-gradient copy; on a subsonic exit nothing
   set the incoming characteristic, so the chamber sat on an arbitrary
   pressure floor (2.2 kPa on the nosink plateau, 23 kPa on the filled
@@ -140,7 +166,7 @@ $RAIL rail/phase2_massaudit.rail && cp /tmp/rail_out /tmp/p2a && /tmp/p2a
 - **Top-level float-const references are runtime atofs** (~50ns + a
   locale lock, EACH evaluation). Inline literals and args are free.
   Hoist constants out of hot loops. notes/rail-const-atof.md.
-- **scr is 55641 floats** (er 0 / ez 13780 / parr 27560 / fmass 41340 /
+- **scr is 55647 floats** (er 0 / ez 13780 / parr 27560 / fmass 41340 / dme 55641 / corner 55642-55645 / anode flag 55646 /
   tri 41341-41860 / eta cache 41861+); **fb is 41 since 2026-09-01** (MUSCL face sums S at 0/5/10/15, face
   jumps d at 20/25/30/35, cumulative wall-sink Joules at 40; it was 25
   before that day). The hyperbolic step is second-order

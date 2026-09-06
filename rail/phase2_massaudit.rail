@@ -27,6 +27,7 @@ two_pi = 6.283185307179586
 ma_face st m acc dt j i dj di =
   let mk = arr_get m ((j + dj) * mp_nz + i + di)
   if mk == 0 then 0.0
+  else if mv_is_corner_face j i dj di then 0.0
   else if mk == 6 then
     -- prescribed inlet face (mv_face_zin, 2026-09-01): the scheme carries
     -- exactly rho_in v_in, no ghost average and no diffusive term
@@ -34,6 +35,37 @@ ma_face st m acc dt j i dj di =
     let r = mp_r_of j
     let rate = rho_in * in_v * two_pi * r * mp_dr
     float_arr_set acc mk (float_arr_get acc mk + rate)
+  else if mk == 8 then
+    let mrc = mp_get st mp_f_mr j i
+    let rf = mp_r_of j + 0.5 * mp_dr
+    if mrc > 0.0 then
+      let ex = float_arr_new 4 0.0
+      let _ = mv_out_state st j i mp_f_mr ex
+      let rate = 0.0 - float_arr_get ex 0 * float_arr_get ex 1 * two_pi * rf * mp_dz
+      float_arr_set acc mk (float_arr_get acc mk + rate)
+    else
+      let rc = mp_get st mp_f_rho j i
+      let rg = mp_get st mp_f_rho (j + 1) i
+      let fc = mp_get st mp_f_mr j i
+      let fg = mp_get st mp_f_mr (j + 1) i
+      let fh = 0.5 * (fc + fg) - (mp_dr / (4.0 * dt)) * (rg - rc)
+      float_arr_set acc mk (float_arr_get acc mk - fh * two_pi * rf * mp_dz)
+  else if mk == 7 then
+    -- exit face (mv_face_zout, 2026-09-05): the scheme's own outflow state
+    let mzc = mp_get st mp_f_mz j i
+    if mzc > 0.0 then
+      let ex = float_arr_new 4 0.0
+      let _ = mv_exit_state st j i ex
+      let rate = 0.0 - float_arr_get ex 0 * float_arr_get ex 1 * two_pi * mp_r_of j * mp_dr
+      float_arr_set acc mk (float_arr_get acc mk + rate)
+    else
+      let r = mp_r_of j
+      let rc = mp_get st mp_f_rho j i
+      let rg = mp_get st mp_f_rho j (i + 1)
+      let fc = mp_get st mp_f_mz j i
+      let fg = mp_get st mp_f_mz j (i + 1)
+      let fh = 0.5 * (fc + fg) - (mp_dz / (4.0 * dt)) * (rg - rc)
+      float_arr_set acc mk (float_arr_get acc mk - fh * two_pi * r * mp_dr)
   else
     let r = mp_r_of j
     let rc = mp_get st mp_f_rho j i
@@ -71,13 +103,23 @@ main =
   let jt = 0.0 + 8000.0
   let m = mp_build_mask
   let btp = mp_build_btp jt
+  let _ = mp_set_free_cath btp 1.0
+  let _ = mp_set_free_anode btp 1.0
   let st = float_arr_new mp_state 0.0
   let _ = mv_load_state "out/phase2_ckpt.f32" st
   let _ = mv_apply_ghosts st btp m
   let dt = 1.0 * mv_dt st m
+  -- (2026-09-05) the family table is read on the state the hyperbolic
+  -- phase sees: after the resistive phase (which leaves rho and
+  -- momentum alone but moves p, and the exit face state reads p)
+  let ns = float_arr_new mp_state 0.0
+  let fb = float_arr_new 42 0.0
+  let scr = float_arr_new 55647 0.0
+  let _ = mv_step_res st btp m fb scr dt
+  let _ = mv_apply_ghosts st btp m
   let _ = print (cat ["mass audit of out/phase2_ckpt.f32 (dt=", show_float dt,
                       "); rate INTO the domain per surface family:"])
-  let acc = float_arr_new 8 0.0
+  let acc = float_arr_new 9 0.0
   let _ = ma_loop st m acc dt 0
   let _ = ma_show acc 6 "inlet (nominal 0.006)"
   let _ = ma_show acc 5 "backplate wall"
@@ -86,19 +128,17 @@ main =
   let _ = ma_show acc 4 "chamber wall"
   let _ = ma_show acc 3 "axis (should be ~0)"
   let _ = ma_show acc 7 "outflow (negative = leaving)"
+  let _ = ma_show acc 8 "open radial boundary past the anode (negative = leaving)"
   let net1 = float_arr_get acc 1 + float_arr_get acc 2 + float_arr_get acc 3
   let net2 = float_arr_get acc 4 + float_arr_get acc 5 + float_arr_get acc 6
-  let net = net1 + net2 + float_arr_get acc 7
+  let net = net1 + net2 + float_arr_get acc 7 + float_arr_get acc 8
   let _ = print (cat ["  net d(mass)/dt = ", show_float net, " kg/s"])
   -- self-check: the family sum is a COPY of the scheme's face rules, so
   -- it can drift from the scheme (it did when the inlet face changed).
   -- Take one real mv_step and compare the observed dm/dt with the net;
   -- floor mass (scr_fmass) is booked separately.
-  let ns = float_arr_new mp_state 0.0
-  let fb = float_arr_new 42 0.0
-  let scr = float_arr_new 55641 0.0
   let m0 = 1.0 * mv_total_mass st m
-  let _ = mv_step st ns btp m fb scr dt
+  let _ = mv_step_hyp st ns btp m fb scr dt
   let m1 = 1.0 * mv_total_mass ns m
   let obs = (m1 - m0) / dt
   let flr = float_arr_get scr scr_fmass / dt

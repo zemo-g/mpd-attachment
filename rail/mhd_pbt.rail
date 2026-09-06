@@ -16,7 +16,10 @@
 --
 -- Masks: 0 fluid, 1 cathode, 2 anode, 3 axis ghost, 4 wall ghost,
 --        5 backplate ghost (wall part), 6 backplate ghost (inlet),
---        7 outflow ghost.
+--        7 outflow ghost, 8 open radial boundary (r = r_ch DOWNSTREAM of
+--        the anode outer face, 2026-09-05: there is no wall there; the
+--        old mask 4 confined and cooled the plume against a fictitious
+--        300 K wall, notes/audit_2026-09-05.md finding 1).
 --
 -- Attachment (Rudolph, argon 6 g/s; program.md eq set):
 --   cathode side: I(z) = J (1 - (1-phi) z / l_c), phi J emitted at the tip
@@ -78,7 +81,7 @@ mu0_2pi = 2.0e-7
 -- ── mask ──────────────────────────────────────────────────
 mp_mask_of j i =
   if j == 0 then 3
-  else if j >= mp_nrm1 then 4
+  else if j >= mp_nrm1 then (if i > mp_i_an1 then 8 else 4)
   else if i >= mp_nzm1 then 7
   else if i == 0 then
     let in1 = if j >= mp_j_in1a then j <= mp_j_in1b else false
@@ -166,6 +169,7 @@ mp_bt_presc jtot j i =
     let r = 1.0 * mp_r_of j
     1.0 * mp_bt_of jtot r
   else if m == 7 then 0.0
+  else if m == 8 then 0.0
   else if m == 1 then
     -- cathode: side face (r = r_c) unless this is the tip row (i = mp_i_tip)
     if i == mp_i_tip then
@@ -207,6 +211,17 @@ mp_build_btp_loop btp jtot i =
 mp_build_btp jtot =
   let btp = float_arr_new mp_nrnz 0.0
   let _ = mp_build_btp_loop btp jtot 0
+  -- corner alternates (2026-09-05, see the corner-ghost block in
+  -- mpd_solver.rail): slot (0,4) the cathode SIDE face at the tip
+  -- corner's z, slot (0,2) the anode INNER face at r_103, slot (0,3)
+  -- the anode OUTER face at r_103. Axis-row cells, never read as faces.
+  let zc = 1.0 * mp_z_of mp_i_tip
+  let ic = 1.0 * mp_ienc_cath jtot zc
+  let _ = float_arr_set btp 4 (1.0 * mp_bt_of ic pbt_r_c)
+  let ra = 1.0 * mp_r_of mp_j_anode
+  let ia = 1.0 * mp_ienc_aif jtot ra
+  let _ = float_arr_set btp 2 (1.0 * mp_bt_of ia ra)
+  let _ = float_arr_set btp 3 0.0
   btp
 
 -- Free-cathode flag lives in btp slot 0 (cell (0,0): axis-row corner,
@@ -214,3 +229,12 @@ mp_build_btp jtot =
 -- 1.0: the solver treats cathode faces as an ideal conductor (Neumann,
 -- see rail/mpd_solver.rail header); 0.0: the prescribed split above.
 mp_set_free_cath btp flag = float_arr_set btp 0 flag
+
+-- Free-anode flag lives in btp slot 1 (cell (0,1), axis row, never a
+-- face). 1.0 (2026-09-05): the anode bore, inner and outer faces are an
+-- ideal conductor (E_t = 0: bore d(rB)/dr = 0, inner and outer faces
+-- dB/dz = 0), so WHERE the current leaves through the anode is solved;
+-- the total is still pinned by the chamber wall (J upstream of the
+-- anode plane, 0 downstream). 0.0: Rudolph's prescribed split
+-- (j_i uniform on the inner face up to J_t1, the rest on the lip).
+mp_set_free_anode btp flag = float_arr_set btp 1 flag

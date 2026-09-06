@@ -152,7 +152,7 @@ main =
   -- en to keep p = amb_p exactly)
   let jt2 = 0.0 + 8000.0
   let stx = mv_init jt2
-  let scr2 = float_arr_new 55641 0.0
+  let scr2 = float_arr_new 55647 0.0
   -- mv_rco/mv_zco read eta from the scr cache since the 2026-09-01
   -- caching pass: fill it or the operators run with eta = 0 and checks
   -- 23-25 pass VACUOUSLY (nothing diffuses, profiles trivially held).
@@ -220,15 +220,20 @@ main =
   let stq = mv_init jt2
   let nsq0 = mv_init jt2
   let fbq = float_arr_new 42 0.0
-  let scrq = float_arr_new 55641 0.0
+  let scrq = float_arr_new 55647 0.0
   let stw = mc_run stq nsq0 btp m fbq scrq 0.0 50
   let _ = mv_apply_ghosts stw btp m
   let dtq = 1.0 * mv_dt stw m
+  -- the exit face state depends on p (2026-09-05), so the boundary rate
+  -- is read after the resistive phase, on the state the hyperbolic
+  -- phase sees (mass is untouched by the resistive phase)
+  let _ = mv_step_res stw btp m fbq scrq dtq
+  let _ = mv_apply_ghosts stw btp m
   let m0 = 1.0 * mv_total_mass stw m
   let br = 1.0 * mv_bmass_rate stw m dtq
   let fm0 = float_arr_get scrq scr_fmass
   let nsw = float_arr_new mp_state 0.0
-  let _ = mv_step stw nsw btp m fbq scrq dtq
+  let _ = mv_step_hyp stw nsw btp m fbq scrq dtq
   let m1 = 1.0 * mv_total_mass nsw m
   let dm = m1 - m0
   let pred = dtq * br
@@ -267,8 +272,13 @@ main =
   -- 4.0594e-4 + eta_en 5.8503e-5; at T = 50000 K (alpha = 1)
   -- ln(Lambda) = 6.221, eta = 3.6170e-5. The old 1.317e-4 / 5.59e-6
   -- were the ln(Lambda) = 0.96 coefficient (claim 001a).
-  let f30 = check "eta partially-ionized (T=9000) = 4.644e-4"
-              (fabs (et30 / 0.00046444552224 - 1.0) < 0.001) f29
+  -- 2026-09-05: sigma_en(T) replaces the constant 1e-19; at 9000 K
+  -- (0.7756 eV) the Maxwellian-averaged argon cross section is
+  -- 2.8645e-20 (log-log between the 0.7 and 1.0 eV nodes), so
+  -- eta_en = 5.8503e-5 x 0.28645 = 1.6758e-05; eta_ei unchanged (bt = 0,
+  -- x = 0 keeps the parallel value). Python reference 4.226983e-04.
+  let f30 = check "eta partially-ionized (T=9000) = 4.2270e-04"
+              (fabs (et30 / 4.2269826484e-04 - 1.0) < 0.001) f29
   let _ = mp_put ste mp_f_en 60 50 137877.86303
   let et31 = 1.0 * mv_eta_calc ste 60 50
   let f31 = check "eta fully-ionized limit = Spitzer lnL 6.22: 3.617e-5"
@@ -342,7 +352,7 @@ main =
   let r36 = 1.0 * mp_r_of 20
   let g36 = 2.0 * (r36 - 0.5 * mp_dr) / (r36 * mp_dr * mp_dr)
   let a36 = 1.0 * eos_alpha (rho36 / m_ion_ar) t36
-  let k36 = 1.0 * wall_kappa (rho36 / m_ion_ar) a36 t36
+  let k36 = 1.0 * wall_kappa (rho36 / m_ion_ar) a36 t36 (mp_get st36 mp_f_bt 20 40)
   let de36 = k36 * (t36 - t_wall) * dt36 * g36
   let got36 = eit - 1.0 * mv_eint st36 20 40
   let okde = fabs (got36 / de36 - 1.0) < 0.000000001
@@ -359,7 +369,7 @@ main =
   let st37 = mv_init jt2
   let c37 = 0.0 + 0.5
   let _ = st37_fill st37 c37 0
-  let scr37 = float_arr_new 55641 0.0
+  let scr37 = float_arr_new 55647 0.0
   let eta37 = 0.0 + 0.0001
   let _ = st37_eta scr37 eta37 0
   let fb37 = float_arr_new 42 0.0
@@ -381,9 +391,9 @@ main =
   -- n = 1e22, 15000 K is alpha 0.9655, ln(Lambda) 4.98, kappa_e 1.019,
   -- mixture 0.99349970. A constant 1 W/m/K sink at 800 K fails this
   -- 28x. Both references at 1e-6 / 1e-3 rel.
-  let kc38 = 1.0 * wall_kappa 1.0e22 0.0 800.0
+  let kc38 = 1.0 * wall_kappa 1.0e22 0.0 800.0 0.0
   let ah38 = 1.0 * eos_alpha 1.0e22 15000.0
-  let kh38 = 1.0 * wall_kappa 1.0e22 ah38 15000.0
+  let kh38 = 1.0 * wall_kappa 1.0e22 ah38 15000.0 0.0
   let ok38 = if fabs (kc38 / 0.0351683003 - 1.0) < 0.000001
              then fabs (kh38 / 0.99349970 - 1.0) < 0.001 else false
   let f38 = check "wall kappa self-limits (neutral 800 K, Spitzer 15 kK)" ok38 f37
@@ -498,12 +508,347 @@ main =
   let ok41d = fabs (mp_get stx mp_f_bt 10 95 / 0.002 - 1.0) < 0.000000000001
   let ok41 = if ok41a then if ok41b then if ok41c then ok41d else false else false else false
   let f41 = check "free-cathode Neumann fold exact on c/r and z-uniform" ok41 f40
-  if f41 == 0 then
-    let _ = print "SELFTEST PASS (41 checks)"
+  -- (42) pinching sums on the solver's pressure (2026-09-05): the tip
+  -- row j = 1..19 at i = 81 set to the check-31 fully ionized state
+  -- (rho 0.0019899, e_int 137877.86 -> Saha p = (1+alpha) n k T); the
+  -- CT slot must be exactly p_saha * pi r_c^2 (the discrete tip area is
+  -- exact) and the ideal-EOS legacy sum must overshoot it (2/3 e_int is
+  -- ~2.5x the Saha p there), which is the defect this replaces.
+  let st42 = mv_init jt2
+  let _ = st42_fill st42 1
+  let pg42 = mv_pressure_surfaces st42 m
+  let ps42 = 1.0 * mv_pressure st42 10 81
+  let area42 = pi_f * pbt_r_c * pbt_r_c
+  let ok42a = fabs (float_arr_get pg42 1 / (ps42 * area42) - 1.0) < 0.000000001
+  let pgi42 = sd_pressure_surfaces st42 m
+  let ok42b = float_arr_get pgi42 1 > 2.0 * float_arr_get pg42 1
+  let ok42 = if ok42a then ok42b else false
+  let f42 = check "pinching sums on Saha p (tip = p_saha pi r_c^2; ideal 2x off)" ok42 f41
+  -- (43) implicit magnetic-energy counter (2026-09-05): one z+r sweep
+  -- pair on the 50-step state must book into scr_dme exactly the change
+  -- of sum(B^2/2mu0 dV) over the fluid cells (the mv_diff_write pairing
+  -- is exact per write, so the sum telescopes).
+  let st43 = mv_init jt2
+  let ns43 = mv_init jt2
+  let fb43 = float_arr_new 42 0.0
+  let scr43 = float_arr_new 55647 0.0
+  let stw43 = mc_run st43 ns43 btp m fb43 scr43 0.0 50
+  let _ = float_arr_set scr43 scr_dme 0.0
+  let me43a = 1.0 * st43_me stw43 m 0 0.0
+  let dt43 = 1.0 * mv_dt stw43 m
+  let _ = mv_eta_loop stw43 scr43 0
+  let _ = mv_zsweep stw43 btp m scr43 dt43 1
+  let _ = mv_rsweep stw43 btp m scr43 dt43 1
+  let me43b = 1.0 * st43_me stw43 m 0 0.0
+  let dme43 = float_arr_get scr43 scr_dme
+  let ok43 = fabs (dme43 / (me43b - me43a) - 1.0) < 0.000000001
+  let f43 = check "implicit me counter books the sweeps' magnetic-energy change" ok43 f42
+  -- (44) thrust target provenance (2026-09-05): the two fig-1 anchors
+  -- the 8 kA target interpolates must be in the digitized data, and the
+  -- interpolation must land at 24.0 N with sigma_dig ~0.9 N.
+  let okp1 = find_pt dlines 7195.0 4.176
+  let okp2 = find_pt dlines 8172.0 3.664
+  let tm44 = 0.0 + thrust_meas_ar6_8ka
+  let ts44 = 0.0 + thrust_meas_sigma_8ka
+  let ok44 = if okp1 then if okp2 then if near tm44 24.03 0.03 then near ts44 0.88 0.05 else false else false else false
+  let f44 = check "thrust target 24.0 +- 0.9 N from the fig-1 anchors" ok44 f43
+  -- (45) exit face is choked upwind, no jump (2026-09-05). On the check-39
+  -- state (ghosts applied, p cache filled): the subsonic cell j=20 (rho
+  -- 2e-3, u 500, p 2000, c 1291) must carry the SONIC state, c* = (500 +
+  -- 3 c)/4, rho* = rho (c*/c)^3, p* = p (c*/c)^5: S/2 = [rho* c*, 0,
+  -- rho* c*^2 + p*, ...] and every gas jump d = 0; the supersonic cell
+  -- j=40 must carry F(U_c) with d = 0; the backflow cell j=60 keeps the
+  -- pair form (d[0] = amb_rho - rho_c). The boundary mass rate through
+  -- the j=20 face must be rho* c* 2 pi r dr. Saha at 4800 K moves p by
+  -- ~1e-4, hence 1e-3 rel on the state values, exact on the zeros.
+  let _ = mv_parr_loop st39 scrq 0
+  let _ = mv_face_z st39 scrq m fbq 20 ie39 10 30
+  let c45 = sqrt (1.6666666666666667 * 2000.0 / 0.002)
+  let cst45 = 0.25 * (500.0 + 3.0 * c45)
+  let q45 = cst45 / c45
+  let rst45 = 0.002 * q45 * q45 * q45
+  let pst45 = 2000.0 * q45 * q45 * q45 * q45 * q45
+  let ok45a = if fabs (0.5 * float_arr_get fbq 10 / (rst45 * cst45) - 1.0) < 0.001
+              then fabs (0.5 * float_arr_get fbq 12 / (rst45 * cst45 * cst45 + pst45) - 1.0) < 0.001
+              else false
+  let ok45b = if float_arr_get fbq 30 == 0.0 then if float_arr_get fbq 32 == 0.0
+              then float_arr_get fbq 33 == 0.0 else false else false
+  let _ = mv_face_z st39 scrq m fbq 40 ie39 10 30
+  let p40 = 1.0 * mv_pressure st39 40 ie39
+  let ok45c = if fabs (0.5 * float_arr_get fbq 10 / 5.0 - 1.0) < 0.000000001
+              then if fabs (0.5 * float_arr_get fbq 12 / (5.0 * 5000.0 + p40) - 1.0) < 0.001
+              then float_arr_get fbq 33 == 0.0 else false else false
+  let _ = mv_face_z st39 scrq m fbq 60 ie39 10 30
+  let ok45d = fabs (float_arr_get fbq 30 / (amb_rho - 0.002) - 1.0) < 0.000000001
+  let acc45 = float_arr_new 1 0.0
+  let dt45 = 0.0 + 1.0e-9
+  let _ = mv_bmass_face st39 m acc45 dt45 20 ie39 0 1
+  let ok45e = fabs (float_arr_get acc45 0 / (0.0 - rst45 * cst45 * mv_tau * mp_r_of 20 * mp_dr) - 1.0) < 0.001
+  let ok45 = if ok45a then if ok45b then if ok45c then if ok45d then ok45e else false else false else false else false
+  let f45 = check "exit face: sonic state on subsonic cell, upwind supersonic, no jump" ok45 f44
+  -- (46) solid faces carry no B and no energy in the hyperbolic step
+  -- (2026-09-05). A moving gas (mr = mz = 0.5) with B = c/r everywhere,
+  -- free cathode, ghosts applied: the barrel face (19|20, i=40), the
+  -- chamber-wall face (128|129), the backplate face (j=60, 0|1), the tip
+  -- face (j=10, 80|81) and the anode bore face (102|103, i=86) must all
+  -- return S[3] = S[4] = d[3] = d[4] = 0 while the normal-momentum sum
+  -- stays the pair form 2 (m_n^2/rho + p + (me_c + me_g)/2); the axis
+  -- face (0|1, i=100, past the tip) must keep its nonzero bt jump (B is antisymmetric there,
+  -- the true symmetry), and a fluid-fluid first-order face keeps its
+  -- jumps.
+  let st46 = mv_init jt2
+  let _ = st46_fill st46 0
+  let btp46 = mp_build_btp 8000.0
+  let _ = mp_set_free_cath btp46 1.0
+  let _ = mv_apply_ghosts st46 btp46 m
+  let _ = mv_parr_loop st46 scrq 0
+  let _ = mv_face_r st46 scrq m fbq 19 40 0 20
+  let ok46a = st46_zero fbq
+  let pw46 = 1.0 * mv_pressure st46 20 40
+  let mec = 0.5 * mp_get st46 mp_f_bt 20 40 * mp_get st46 mp_f_bt 20 40 * inv_mu0
+  let meg = 0.5 * mp_get st46 mp_f_bt 19 40 * mp_get st46 mp_f_bt 19 40 * inv_mu0
+  let want46 = 2.0 * (0.25 / mp_get st46 mp_f_rho 20 40 + pw46) + mec + meg
+  let ok46b = fabs (float_arr_get fbq 1 / want46 - 1.0) < 0.000000001
+  let _ = mv_face_r st46 scrq m fbq 128 40 0 20
+  let ok46c = st46_zero fbq
+  let _ = mv_face_z st46 scrq m fbq 60 0 0 20
+  let ok46d = st46_zero fbq
+  let _ = mv_face_z st46 scrq m fbq 10 80 0 20
+  let ok46e = st46_zero fbq
+  let _ = mv_face_r st46 scrq m fbq 102 86 0 20
+  let ok46f = st46_zero fbq
+  let _ = mv_face_r st46 scrq m fbq 0 100 0 20
+  let ok46g = fabs (float_arr_get fbq 24 / (2.0 * mp_get st46 mp_f_bt 1 100) - 1.0) < 0.000000001
+  let _ = mv_face_r st46 scrq m fbq 20 40 0 20
+  let ok46h = float_arr_get fbq 24 != 0.0
+  let ok46 = if ok46a then if ok46b then if ok46c then if ok46d then if ok46e then if ok46f then if ok46g then ok46h
+             else false else false else false else false else false else false else false
+  let f46 = check "solid faces: no B / energy flux, wall force pair form kept, axis + fluid faces untouched" ok46 f45
+  -- (47) corner faces are impermeable (2026-09-05). On the check-46
+  -- state (moving gas, corner values loaded from btp46) the three corner
+  -- faces must carry zero mass sum and zero mass / tangential-momentum /
+  -- energy / bt jumps, the normal-momentum jump -2 m_n (a proper mirror),
+  -- and mv_bmass_face must book 0 for them while a neighbouring
+  -- non-corner solid face still books 0 too and the exit face does not.
+  let _ = mv_load_corner btp46 scrq
+  let _ = mv_face_r st46 scrq m fbq 19 80 0 20
+  let ok47a = if float_arr_get fbq 0 == 0.0 then if float_arr_get fbq 20 == 0.0
+              then if float_arr_get fbq 22 == 0.0 then if float_arr_get fbq 23 == 0.0
+              then float_arr_get fbq 24 == 0.0 else false else false else false else false
+  let ok47b = fabs (float_arr_get fbq 21 / (2.0 * mp_get st46 mp_f_mr 20 80) - 1.0) < 0.000000001
+  let _ = mv_face_z st46 scrq m fbq 103 82 0 20
+  let ok47c = if float_arr_get fbq 0 == 0.0 then if float_arr_get fbq 20 == 0.0
+              then if float_arr_get fbq 21 == 0.0 then float_arr_get fbq 23 == 0.0 else false else false else false
+  let ok47d = fabs (float_arr_get fbq 22 / (0.0 - 2.0 * mp_get st46 mp_f_mz 103 82) - 1.0) < 0.000000001
+  let _ = mv_face_z st46 scrq m fbq 103 90 0 20
+  let ok47e = if float_arr_get fbq 0 == 0.0 then if float_arr_get fbq 20 == 0.0
+              then if float_arr_get fbq 21 == 0.0 then float_arr_get fbq 23 == 0.0 else false else false else false
+  let ok47f = fabs (float_arr_get fbq 22 / (2.0 * mp_get st46 mp_f_mz 103 91) - 1.0) < 0.000000001
+  let acc47 = float_arr_new 1 0.0
+  let dt47 = 0.0 + 1.0e-9
+  let _ = mv_bmass_face st46 m acc47 dt47 20 80 (0 - 1) 0
+  let _ = mv_bmass_face st46 m acc47 dt47 103 82 0 1
+  let _ = mv_bmass_face st46 m acc47 dt47 103 91 0 (0 - 1)
+  let _ = mv_bmass_face st46 m acc47 dt47 20 40 (0 - 1) 0
+  let ok47g = float_arr_get acc47 0 == 0.0
+  let _ = mv_bmass_face st46 m acc47 dt47 60 104 0 1
+  let ok47h = float_arr_get acc47 0 != 0.0
+  let ok47 = if ok47a then if ok47b then if ok47c then if ok47d then if ok47e then if ok47f then if ok47g then ok47h
+             else false else false else false else false else false else false else false
+  let f47 = check "corner faces impermeable (three faces, proper mirrors, bmass 0)" ok47 f46
+  -- (48) open radial boundary past the anode (2026-09-05). Mask: j=129
+  -- is 4 up to the anode outer face (i <= 90) and 8 beyond. On a cold
+  -- ideal state (rho 2e-3, p 2000, c 1291) with (128,95) radial outflow
+  -- v_r 500 (subsonic), (128,100) v_r 5000, (128,103) v_r -300: the
+  -- ghost column must mirror the exit rules (p amb_p / e_int copy /
+  -- ambient at rest, bt negated); the (128|129, 95) face must carry the
+  -- sonic state with zero gas jumps; mv_bmass_face must book
+  -- -rho* c* 2 pi r_f dz there; the wall sink must remove NOTHING from a
+  -- hot (128,95) and something from a hot (128,60) (the r = r_ch wall
+  -- upstream of the anode; (128,85) is inside the anode ring).
+  let ok48m = if mp_mask_of 129 95 == 8 then if mp_mask_of 129 85 == 4
+              then if mp_mask_of 129 90 == 4 then mp_mask_of 129 91 == 8 else false else false else false
+  let st48 = mv_init jt2
+  let jf48 = 0 + mp_nrm2
+  let jg48 = jf48 + 1
+  let _ = mp_put st48 mp_f_rho jf48 95 0.002
+  let _ = mp_put st48 mp_f_mr jf48 95 1.0
+  let _ = mp_put st48 mp_f_en jf48 95 (2000.0 / gamma_m1 + 0.5 * 1.0 * 500.0 + 0.5 * 0.01 * 0.01 * inv_mu0)
+  let _ = mp_put st48 mp_f_rho jf48 100 0.001
+  let _ = mp_put st48 mp_f_mr jf48 100 5.0
+  let _ = mp_put st48 mp_f_en jf48 100 (1000.0 / gamma_m1 + 0.5 * 5.0 * 5000.0 + 0.5 * 0.02 * 0.02 * inv_mu0)
+  let _ = mp_put st48 mp_f_rho jf48 103 0.002
+  let _ = mp_put st48 mp_f_mr jf48 103 (0.0 - 0.6)
+  let _ = mp_put st48 mp_f_en jf48 103 (2000.0 / gamma_m1 + 0.5 * 0.6 * 300.0 + 0.5 * 0.03 * 0.03 * inv_mu0)
+  let _ = mp_put st48 mp_f_bt jf48 95 0.01
+  let _ = mp_put st48 mp_f_bt jf48 100 0.02
+  let _ = mp_put st48 mp_f_bt jf48 103 0.03
+  let _ = mv_apply_ghosts st48 btp m
+  let pg95 = 1.0 * mv_pressure st48 jg48 95
+  let ok48a = if mp_get st48 mp_f_rho jg48 95 == 0.002 then if mp_get st48 mp_f_mr jg48 95 == 1.0
+              then fabs (pg95 / amb_p - 1.0) < 0.000000001 else false else false
+  let ef100 = 1.0 * mv_eint st48 jf48 100
+  let eg100 = 1.0 * mv_eint st48 jg48 100
+  let ok48b = if mp_get st48 mp_f_mr jg48 100 == 5.0 then fabs (eg100 / ef100 - 1.0) < 0.000000001 else false
+  let pg103 = 1.0 * mv_pressure st48 jg48 103
+  let ok48c = if mp_get st48 mp_f_rho jg48 103 == amb_rho then if mp_get st48 mp_f_mr jg48 103 == 0.0
+              then fabs (pg103 / amb_p - 1.0) < 0.000000001 else false else false
+  let ok48d = if mp_get st48 mp_f_bt jg48 95 == 0.0 - 0.01 then mp_get st48 mp_f_bt jg48 103 == 0.0 - 0.03 else false
+  let _ = mv_parr_loop st48 scrq 0
+  let _ = mv_face_r st48 scrq m fbq jf48 95 0 20
+  let ok48e = if fabs (0.5 * float_arr_get fbq 0 / (rst45 * cst45) - 1.0) < 0.001
+              then fabs (0.5 * float_arr_get fbq 1 / (rst45 * cst45 * cst45 + pst45) - 1.0) < 0.001 else false
+  let ok48f = if float_arr_get fbq 20 == 0.0 then if float_arr_get fbq 21 == 0.0
+              then float_arr_get fbq 23 == 0.0 else false else false
+  let acc48 = float_arr_new 1 0.0
+  let _ = mv_bmass_face st48 m acc48 dt45 jf48 95 1 0
+  let rf48 = 1.0 * mp_r_of jf48 + 0.5 * mp_dr
+  let ok48g = fabs (float_arr_get acc48 0 / (0.0 - rst45 * cst45 * mv_tau * rf48 * mp_dz) - 1.0) < 0.001
+  let sthot = mv_init jt2
+  let _ = mp_put sthot mp_f_en jf48 95 (mp_get sthot mp_f_en jf48 95 + 8000.0)
+  let _ = mp_put sthot mp_f_en jf48 60 (mp_get sthot mp_f_en jf48 60 + 8000.0)
+  let e95a = mp_get sthot mp_f_en jf48 95
+  let e85a = mp_get sthot mp_f_en jf48 60
+  let fb48 = float_arr_new 42 0.0
+  let _ = mv_wall_loop sthot m fb48 dt45 0
+  let ok48h = if mp_get sthot mp_f_en jf48 95 == e95a then mp_get sthot mp_f_en jf48 60 < e85a else false
+  let ok48 = if ok48m then if ok48a then if ok48b then if ok48c then if ok48d then if ok48e then if ok48f then if ok48g then ok48h
+             else false else false else false else false else false else false else false else false
+  let f48 = check "open radial boundary past the anode: mask, ghost, sonic face, bmass, no sink" ok48 f47
+  -- (49) magnetised transport (2026-09-05): the Braginskii resistivity
+  -- bracket is 1 at x = 0, 1.1274 at x = 1 and 1.9489 at x = 100
+  -- (1.95 Drude/parallel); the thermal factor is 1 at x = 0 and 0.2682
+  -- at x = 1; the cross-section table reads 0.3932 (x 1e-19) at 1 eV
+  -- and 0.0816 at 0.3 eV (Ramsauer side); and the fully ionised
+  -- check-31 cell, given a strong field (50 T, x ~ 145, en carrying the
+  -- matching magnetic energy so e_int is unchanged), must read 1.95x its
+  -- unmagnetised eta.
+  let ok49a = if fabs (1.0 * eos_eta_perp_fac 0.0 - 1.0) < 0.000001
+              then if fabs (1.0 * eos_eta_perp_fac 1.0 / 1.127353 - 1.0) < 0.0001
+              then fabs (1.0 * eos_eta_perp_fac 100.0 / 1.948939 - 1.0) < 0.0001 else false else false
+  let ok49b = if fabs (1.0 * eos_kappa_perp_fac 0.0 - 1.0) < 0.000001
+              then fabs (1.0 * eos_kappa_perp_fac 1.0 / 0.268168 - 1.0) < 0.0001 else false
+  let ok49c = if fabs (1.0 * eos_sig_en 1.0 / 3.9320 - 1.0) < 0.0001
+              then fabs (1.0 * eos_sig_en 0.3 / 0.8160 - 1.0) < 0.0001 else false
+  let _ = mp_put ste mp_f_bt 60 50 50.0
+  let _ = mp_put ste mp_f_en 60 50 (137877.86303 + 0.5 * 50.0 * 50.0 * inv_mu0)
+  let et49 = 1.0 * mv_eta_calc ste 60 50
+  let x49 = 1.0 * eos_hall_x (0.0019899 / m_ion_ar) 1.0 50000.0 50.0
+  let ok49d = if x49 > 100.0 then fabs (et49 / et31 / 1.950189 - 1.0) < 0.001 else false
+  let ok49 = if ok49a then if ok49b then if ok49c then ok49d else false else false else false
+  let f49 = check "magnetised transport: eta_perp(x), kappa_perp(x), sigma_en(T)" ok49 f48
+  -- (50) free anode (2026-09-05): with btp slot 1 = 1.0 the bore ghost
+  -- carries B_f r_f / r_g, the inner and outer face ghosts copy the
+  -- fluid B; with 0.0 the prescribed 2 face - fluid holds. The Neumann
+  -- RIGHT fold is exact (1e-12) on c/r for the r-line j = 20..102 at
+  -- i = 86 (both ends Neumann: cathode barrel, anode bore) and on a
+  -- z-uniform line j = 110, i = 1..82 ending at the inner face.
+  let st50 = mv_init jt2
+  let btp50 = mp_build_btp 8000.0
+  let _ = mp_set_free_cath btp50 1.0
+  let _ = mp_set_free_anode btp50 1.0
+  let _ = mp_put st50 mp_f_bt 102 86 0.03
+  let _ = mp_put st50 mp_f_bt 110 82 0.02
+  let _ = mp_put st50 mp_f_bt 110 91 0.015
+  let _ = mv_apply_ghosts st50 btp50 m
+  let ratio50 = (to_float mp_j_anodem1 - 0.5) / (to_float mp_j_anode - 0.5)
+  let ok50a = fabs (mp_get st50 mp_f_bt 103 86 / (0.03 * ratio50) - 1.0) < 0.000000000001
+  let ok50b = if mp_get st50 mp_f_bt 110 83 == 0.02 then mp_get st50 mp_f_bt 110 90 == 0.015 else false
+  let _ = mp_set_free_anode btp50 0.0
+  let _ = mv_apply_ghosts st50 btp50 m
+  let pres50 = 2.0 * float_arr_get btp50 (110 * mp_nz + 83) - 0.02
+  let ok50c = fabs (mp_get st50 mp_f_bt 110 83 / pres50 - 1.0) < 0.000000000001
+  -- both ends Neumann make (I - dt L) near-singular along c/r at dt = 1
+  -- (1.5e-7 round-off there, 3e-10 at 1e-3); dt = 1e-6 keeps the fold under test and the
+  -- solve well conditioned
+  let dt50 = 0.0 + 0.000001
+  let _ = st_line_rinv stx 86 20
+  let _ = mv_rco stx scr2 dt50 86 20 83 0
+  let _ = mv_tri_neu_l scr2 ((to_float 20 - 0.5) / (to_float 20 - 1.5))
+  let _ = mv_tri_neu_r scr2 83 ((to_float 102 - 0.5) / (to_float 102 + 0.5))
+  let _ = mv_thomas_fwd scr2 83 1
+  let _ = mv_rback stx scr2 86 20 82 0.0
+  let ok50d = if fabs (mp_get stx mp_f_bt 60 86 * mp_r_of 60 / 0.001 - 1.0) < 0.000000000001
+              then fabs (mp_get stx mp_f_bt 102 86 * mp_r_of 102 / 0.001 - 1.0) < 0.000000000001 else false
+  let _ = st50_zfill stx 110 1
+  let _ = mv_zco stx scr2 dtbig 110 1 82 0
+  let _ = mv_tri_dir_l scr2 0.002
+  let _ = mv_tri_neu_r scr2 82 1.0
+  let _ = mv_thomas_fwd scr2 82 1
+  let _ = mv_zback stx scr2 110 1 81 0.0
+  let ok50e = if fabs (mp_get stx mp_f_bt 110 40 / 0.002 - 1.0) < 0.000000000001
+              then fabs (mp_get stx mp_f_bt 110 82 / 0.002 - 1.0) < 0.000000000001 else false
+  let ok50 = if ok50a then if ok50b then if ok50c then if ok50d then ok50e else false else false else false else false
+  let f50 = check "free anode: ghosts (bore rB, faces copy, prescribed A/B), Neumann right fold exact" ok50 f49
+  if f50 == 0 then
+    let _ = print "SELFTEST PASS (50 checks)"
     0
   else
-    let _ = print (cat ["SELFTEST FAIL (", show f41, " of 41)"])
+    let _ = print (cat ["SELFTEST FAIL (", show f50, " of 50)"])
     1
+
+-- check 50: uniform B = 0.002 along the z-line (j, i .. 82) up to the anode inner face
+st50_zfill stx j i =
+  if i > 82 then 0
+  else
+    let b = 0.002
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (amb_p / gamma_m1 + 0.5 * b * b * inv_mu0)
+    st50_zfill stx j (i + 1)
+
+-- check 46: the four solid-face slots (S energy, S bt, d energy, d bt) are zero
+st46_zero fb =
+  if float_arr_get fb 3 == 0.0 then if float_arr_get fb 4 == 0.0
+  then if float_arr_get fb 23 == 0.0 then float_arr_get fb 24 == 0.0
+  else false else false else false
+
+-- check 46: gas in motion with B = c/r on every cell (ghosts rebuilt after)
+st46_fill stx ji =
+  if ji >= mp_nrnz then 0
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let r = mp_r_of j
+    let ra = if r < 0.0001 then 0.0001 else r
+    let b = 0.001 / ra
+    let rho = mp_get stx mp_f_rho j i
+    let _ = mp_put stx mp_f_mr j i 0.5
+    let _ = mp_put stx mp_f_mz j i 0.5
+    let _ = mp_put stx mp_f_bt j i b
+    let _ = mp_put stx mp_f_en j i (rho * kT_m / gamma_m1 + 0.25 / rho + 0.5 * b * b * inv_mu0)
+    st46_fill stx (ji + 1)
+
+-- check 42: fully ionized row on the cathode tip
+st42_fill stx j =
+  if j > mp_j_cath then 0
+  else
+    let bt = mp_get stx mp_f_bt j 81
+    let _ = mp_put stx mp_f_rho j 81 0.0019899
+    let _ = mp_put stx mp_f_en j 81 (137877.86303 + 0.5 * bt * bt * inv_mu0)
+    st42_fill stx (j + 1)
+
+-- check 43: sum of magnetic energy over fluid cells
+st43_me stx m ji acc =
+  if ji >= mp_nrnz then 1.0 * acc
+  else
+    let v = if arr_get m ji == 0 then
+        let b = float_arr_get stx (4 * mp_nrnz + ji)
+        0.5 * b * b * inv_mu0 * mv_tau * mp_r_of (ji / mp_nz) * mp_dr * mp_dz
+      else 0.0
+    st43_me stx m (ji + 1) (acc + v)
+
+-- check 44: a digitized point near (j, ct)
+find_pt lines j0 ct0 =
+  if lines == [] then false
+  else
+    let line = head lines
+    if line == "" then find_pt (tail lines) j0 ct0
+    else
+      let f = split "," line
+      let j = parse_float (nth 0 f)
+      let ct = parse_float (nth 1 f)
+      let hit1 = if near j j0 1.0 then near ct ct0 0.001 else false
+      if hit1 then true else find_pt (tail lines) j0 ct0
 
 -- uniform B = 0.002 along the z-line (j, i .. mp_nzm2) past the tip
 st41_zfill stx j i =

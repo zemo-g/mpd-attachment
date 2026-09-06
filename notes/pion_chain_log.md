@@ -1104,3 +1104,268 @@ cell flickers), thrust 18.5 N, mdot_out closing on 6e-3 at 0.1e-3 per
 segment. The seg 12 judgement stands with plateau values wall ~1135,
 tip-face ~1155, thrust ~18.5. Final ckpt/state: /tmp/run_free_fromA/
 out/ckpt_seg16.f32, state_seg16.csv. No chain processes running.
+
+## 2026-09-05: cold audit, then the findings resolved in succession
+
+Audit: notes/audit_2026-09-05.md (tool tools/audit_closure_2026-09-05.py).
+Owner: "work through and resolve them ... in succession, only move
+forward upon confirmation". Each step below shipped with a selftest
+check, a 400-2000 step smoke chained from the previous step's
+checkpoint (starting from the free-cathode seg 16 plateau), and the
+massaudit gate. Selftest 41 -> 50 checks. All UNCOMMITTED.
+
+### cfl 0.15 invariance test on the OLD model (finding 3, run first)
+
+/tmp/run_cfl15_fromfree: cfl 0.15 x 3 segments (each half the physical
+time of a cfl 0.30 segment) from ckpt_seg16. Against the cfl 0.30
+plateau (seg 16 step 18000):
+
+| quantity | cfl 0.30 | cfl 0.15 seg 3 | shift |
+|---|---|---|---|
+| wall p | 1131 | 1265 | +12% |
+| tip p (10,81) | 1146 | 1297 | +13% |
+| root p (20,1) | 2857 | 5017 | +76% |
+| V_arc | 21.22 | 23.39 | +10% |
+| P_wall kW | 62.5 | 72.5 | +16% |
+| T_exhaust N | 18.53 | 18.71 | +1% |
+| mass | 4.00e-6 | 3.88e-6 (falling) | |
+
+Not invariant: the published plateau numbers were scheme-limited at the
+10-15% level (thrust excepted), as finding 3 predicted. The root probe
+is the worst (it sits in the injector band under the LxF wall
+penalty). The same test is to be rerun on the new model.
+
+### Steps shipped (smoke numbers are transients, 400-2000 steps each)
+
+1. Diagnostics/provenance (checks 42-44): mv_pressure_surfaces books
+   the pinching sums on the Saha p (tip 1.56 -> 0.32 N, exit 21.4 ->
+   6.2); thrust_meas_ar6_8ka = 24.03 +- 0.88 N from the fig-1 anchors
+   printed next to T_exhaust; scr_dme counts the implicit sweeps'
+   magnetic-energy delivery, the step line prints E_tot and P_impl.
+   Seg 16 state: P_impl -46 kW (the LxF cathode pumping being returned).
+2. Exit face (check 45, mv_face_zout / mv_out_state): outflow cells
+   carry the choked or expanded face state, no LxF jump; mv_step split
+   into mv_step_res + mv_step_hyp so the mass gate reads the state the
+   hyperbolic phase sees. Smoke: last-cell T 30 -> 1032 K against 1033
+   one cell in, p_exit 12 -> 310 Pa, M_exit (cell) 1.07 -> 0.95 by
+   construction, dt steady, gate 1.2e-9. The runner's mdot_out and
+   T_exhaust now read the face.
+3. Solid faces (check 46, mv_face_solid): S and d for energy and bt are
+   zero on faces with masks 1/2/4/5. Smoke: P_impl -46 -> +7 kW (the
+   pumping is gone), V_arc 21.14 -> 20.98, CT blowing 0.118 -> 0.093,
+   gate 1.1e-10.
+4. Corner ghosts (check 47, mv_face_rcorner / zcorner_in / zcorner_out,
+   mv_load_corner, btp slots (0,2..4)): per-face mirror states; cathode
+   and anode families in the massaudit 0 kg/s exactly (were -8.7e-5 /
+   -7.6e-5). Gate 7.8e-9.
+5. Open radial boundary (check 48, mask 8, mv_ghost_rout, mv_face_rout):
+   j = 129 is mask 8 for i > mp_i_an1; no sink there; the runner prints
+   mdot_side / T_side and folds them into mdot_out / T_exhaust. Smoke:
+   1.4e-3 kg/s leaves radially past the anode, gate 1.3e-9.
+6. Transport (checks 30 new ref, 49): eos_sig_en(T) Maxwellian-averaged
+   argon cross section (3.9e-20 at 1 eV vs the old 1e-19),
+   eos_eta_perp_fac(x) Braginskii transverse bracket on x = omega_ce tau
+   (1 at x = 0, 1.95 at x >> 1), eos_kappa_perp_fac(x) on the wall
+   sink's electron conduction; wall_kappa takes |B|. Smoke: V_arc
+   21.8 -> 21.2 (the two corrections nearly cancel on this state), gate
+   1.0e-8. attachment_map.py mirrors the new eta.
+7. Free anode (check 50, mp_set_free_anode, mv_tri_neu_r): bore
+   d(rB)/dr = 0, inner/outer faces dB/dz = 0; run_free_anode = 1.0.
+
+### 2026-09-05 21:30: new-model chain judged at seg 3 (cfl 0.30), twin pending
+
+Chain /tmp/run_new_fromF (all seven fixes, free cathode AND anode), 3
+segments from the free-anode smoke state. Step 18000 of each segment:
+
+| seg | mass | ptip(10,81) | pwall | mdot_out+side | V_arc | P_wall kW | P_impl kW | T_exh N |
+|---|---|---|---|---|---|---|---|---|
+| 1 | 3.876e-6 | 1500 | 1276 | 6.28e-3 | 20.49 | 56.2 | +6.8 | 19.47 |
+| 2 | 3.829e-6 | 1489 | 1259 | 6.21e-3 | 20.44 | 56.2 | +6.9 | 19.34 |
+| 3 | 3.792e-6 | 1482 | 1242 | 6.16e-3 | 20.41 | 56.2 | +6.9 | 19.22 |
+
+Not a plateau: a slow drain (mass -1.0%/seg, wall -1.3%/seg, the exit
+excess over 6 g/s shrinking 0.28 -> 0.16e-3 per segment, roughly x0.8
+per segment) toward an estimated mass ~3.65e-6, wall ~1150-1200, thrust
+~19.0. Arc, tip and anode split are static from seg 1.
+
+Judgment on seg 3 (massaudit GATE PASS 8.6e-9, every electrode family
+0 kg/s; closure tool: z-momentum net -0.11 N):
+- Numerics are clean now. No exit cell below its upstream temperature
+  (8050-8750 K in the outer annulus at i = 103 and 104, was 30-100 K),
+  no energy or B exchange through solid faces, no corner leaks; the LxF
+  wall penalty is -2.99 N (was -4.75); the implicit step delivers
+  +6.9 kW net (was -46, the pumping); energy closes with the counter.
+- The PHYSICS gap is unchanged. Thrust 19.2 N vs 24.0 +- 0.9 (-20%,
+  was 18.5). Wall 1242 vs Cory 465 (2.7x, was 2.4x). Backplate profile
+  rms 0.57 (was 0.50): matches Cory's parabola at r 1-3 cm (ratios
+  0.85-1.07), then the outer shelf 1240-1400 Pa at r > 5.9 cm vs
+  475-660. Forces on the fluid: backplate +22.2, inlet +8.2, cathode
+  +0.6, anode -8.6 (inner face p -8.1 N, was -6.9), penalties -3.0, exit
+  19.2. The anode-face push GREW: the reservoir is still the deficit.
+- Where the power goes: 40% of eta j^2 in eta-capped cells, 30% in gas
+  below 5000 K (was 29% / 19%), 46% at Hall parameter x > 1; wall sink
+  55 kW = 34% of P_ohm, of which 29 kW on the chamber wall (was 18) and
+  0 on the removed fictitious wall.
+- FREE ANODE SPLIT (the new prediction): inner-face annulus 2.45 kA,
+  bore 3.78 kA, OUTER face 1.77 kA. Rudolph at 8 kA: 3.7 / 4.3 / 0.
+  The model puts 22% of J on the anode's downstream face where the
+  data (J < J_t2 = 14 kA) has none. Plausible cause: with the outer
+  reservoir hot and 2.7x dense the plasma past the anode plane is a
+  good enough conductor to close current on the outer face; the same
+  reservoir problem, seen from the anode.
+- I_enc(r) at z = 9.94: 2.6 kA inside 1 cm, 5.8 inside 5 cm, 8.0 at
+  the wall: 2.1 kA still converges through r > 5 cm to the anode.
+- Attachment: peak |j| at the tip corner, tip share unchanged (~0.29),
+  32% of Ohmic in the hottest 1% of volume.
+
+Verdict: findings 2, 3, 6 (numerics, transport) are resolved and
+verified; finding 1 (reservoir overpressure -> anode-face push ->
+thrust deficit) is NOT resolved by the free anode or the open boundary.
+The remaining lever from the audit's list is the eta cap: 40% of the
+Ohmic power is deposited in cold gas conducting at the cap, so the cap
+IS the reservoir heating. RUNNING since 21:18: /tmp/run_cap_fromS3
+(binary /tmp/p2cap, eta_cap 1e-2, 2 segments from ckpt_seg3). If the
+reservoir cools and the wall falls with the cap, the next physics is a
+real cold-gas conductivity (the cap replaced by the e-n resistivity
+uncapped, with the Hall/ambipolar physics that makes cold gas an
+insulator); if not, the sheath.
+Images out/img/phase2_new_seg3_*; state out/phase2_state_new_seg3.csv,
+ckpt out/phase2_ckpt_new_seg3.f32.
+
+### cfl 0.15 twin on the NEW model (/tmp/run_new15_fromF), matched physical time
+
+cfl 0.15 segments are 1.04e-4 s, cfl 0.30 segments 1.75e-4 s, so cfl15
+seg 2 (t 2.1e-4) sits between cfl30 seg 1 and 2, cfl15 seg 3 (3.1e-4)
+just before cfl30 seg 2 (3.5e-4). Step 18000 values:
+
+| quantity | cfl30 seg 1 | cfl15 seg 2 | cfl30 seg 2 | cfl15 seg 3 | shift |
+|---|---|---|---|---|---|
+| mass | 3.876e-6 | 3.866e-6 | 3.829e-6 | 3.823e-6 | -0.3% |
+| pwall | 1276 | 1306 | 1259 | 1290 | +2.4% |
+| ptip (10,81) | 1500 | 1351 | 1489 | 1349 | -10% |
+| root (20,1) | 1491 | 641 | 1431 | | -57% |
+| V_arc | 20.49 | 20.57 | 20.44 | 20.53 | +0.4% |
+| P_wall kW | 56.2 | 62.1 | 56.2 | 62.1 | +10.5% |
+| T_exhaust N | 19.47 | 18.73 | 19.34 | | -3.8% |
+| mdot out+side | 6.28e-3 | 6.38e-3 | 6.21e-3 | 6.35e-3 | +2% |
+
+Against the old model's test (wall +12%, V_arc +10%, P_wall +16%, tip
++13%, root +76%): mass, V_arc and wall are now scheme-invariant at the
+few-percent level and the thrust within 4%. The two wall-adjacent
+probes (tip face, injector-band root) and the wall sink still carry a
+10% (root: 57%) LxF dependence: the normal-momentum penalty at solid
+faces is the last first-order term left, and the probe cells sit on
+it. Report tip and root from the field maxima (attachment_map), not
+from the face cells, until a Rusanov or resolved-wall treatment ships.
+
+### 2026-09-05 22:30: eta_cap 1e-2 sensitivity, seg 1 (transient, chamber refilling)
+
+/tmp/run_cap_fromS3, binary /tmp/p2cap (repo copy, eta_cap 1e-2), from
+the new model's ckpt_seg3. One segment in (mass +5%/seg, exit 4.1 g/s,
+so NOT a plateau; segments 2-5 queued):
+
+| quantity | cap 1e-3 seg 3 | cap 1e-2 seg 1 | data |
+|---|---|---|---|
+| pwall | 1242 | 789 | 465 |
+| tip (10,81) | 1490 | 2639 | 2104 (inferred) |
+| root (20,1) | 1394 | 2214 | 1658 (inferred) |
+| profile rms | 0.57 | 0.26 | |
+| anode inner-face push N | -8.1 | -5.1 | ~-1.9 |
+| Ohmic in r > 5.1 cm | 10% | 0% | |
+| Ohmic in capped cells | 40% | 20% | |
+| Ohmic in T < 5000 K | 30% | 16% | |
+| I_enc inside 5 cm at z 9.94 | 5.8 kA | 7.7 kA | |
+| V_arc counter / state | 20.4 / 24.3 | 24.8 / 28.5 | |
+| T_exhaust | 19.2 | 16.9 (refilling) | 24.0 |
+
+The cap was the reservoir: with cold gas 10x more resistive the current
+leaves the outer annulus entirely (0.3 kA beyond r = 5 cm at the anode
+plane, was 2.1), the outer shelf drops from 2.7x to 1.7x Cory, the
+profile takes Cory's shape (rms 0.26, root 1.34x, r = 3 cm 0.77x), the
+anode-face push falls 3 N, and the arc is 20% more resistive. The
+thrust reads low only because the exit is passing 4.1 g/s while the
+chamber refills; judge it at the plateau. Direction if it holds: the
+cap is not physics; replace it by the uncapped e-n resistivity with
+the physics that makes cold gas an insulator (the Saha alpha floor
+1e-8 is the other half of that knob).
+
+### 2026-09-05 23:30: cap test seg 2, and what the chamber pressure is pinned by
+
+Cap 1e-2 seg 2 (step 18000): mass 4.37e-6 (+9%/seg), pwall 792 (flat),
+tip 2750, exit + side 3.95e-3 kg/s (still 4 g/s out of 6 in), V_arc
+25.0, P_impl +26 kW. Region mass split (scratch tool where_mass.py):
+every region gained 8-10% uniformly while cooling: outer annulus
+(1+a)T 2687 -> 1301 K at rho 3.2 -> 3.7e-3 and p 1571 -> 902; mid
+annulus 4106 -> 2456 K; exit column rho 2.24 -> 1.22e-4 at v 2458 ->
+3479 m/s. The chamber is filling with COLD dense gas at roughly
+constant pressure; the exit (12-19 kK core) passes only the hot core.
+Not a plateau; at 2e-3 kg/s net the fill has many segments to go.
+
+The arithmetic that matters: a choked exit of area 1.29e-2 m^2 at the
+exhaust temperature (c_s ~2.5 km/s at 12 kK) needs p ~ mdot c_s / A ~
+1.1-1.2 kPa to pass 6 g/s. That is the chamber-pressure FLOOR every
+plateau so far has sat on (wall 1130-1240). Cory's 465 Pa at the wall
+next to 1660 at the root is a RADIAL pressure gradient across the
+chamber, i.e. j x B pinch force out to r_ch, i.e. current conducted
+by the outer plasma. The cap-1e-3 model had the current there but the
+gas hot and 2.7x overdense; cap 1e-2 removes the current (0% Ohmic
+beyond 5 cm) and with it any gradient, so the wall can only fall to
+the floor. Neither is Cory's picture: an outer plasma that conducts
+AND is thin. The model's outer gas is thick because the 300 K wall
+sink (29 kW on the chamber wall) keeps it cold, and cold gas neither
+ionises nor accelerates, so the ring-injected 46% of mdot piles up.
+RUNNING since 23:30 as the complementary sensitivity: /tmp/run_twall_
+fromS3 (binary /tmp/p2twall, t_wall = 1500 K, the temperature of a hot
+insulator, 2 segments from the new-model ckpt_seg3, cap 1e-3); cap
+segs 3-5 continue in parallel. Judge both in the morning on the same
+table: pwall, root, profile rms, anode-face push, Ohmic beyond 5 cm,
+outer-annulus rho and T, exit throughput.
+
+### 2026-09-06 02:00: the two reservoir sensitivities, judged
+
+Both from the new-model ckpt_seg3 (cap 1e-3, t_wall 300 K), step 18000
+values; cap 1e-2 at seg 4 (still filling), t_wall 1500 K at seg 2
+(draining). Reference = new model seg 3.
+
+| quantity | reference | cap 1e-2 seg 4 | t_wall 1500 seg 2 | data |
+|---|---|---|---|---|
+| mass | 3.79e-6 | 5.04e-6 (+7%/seg) | 3.61e-6 (-3%/seg) | |
+| pwall | 1242 | 911 (rising) | 1630 | 465 |
+| tip (10,81) | 1482 | 2864 | 1562 | 2104 (inf.) |
+| profile rms | 0.57 | 0.26 (seg 1) | 0.89 | |
+| exit + side mdot | 6.16e-3 | 4.29e-3 | 6.52e-3 | 6.0e-3 |
+| anode inner-face push N | -8.1 | -5.1 (seg 1) | -9.6 | ~-1.9 |
+| Ohmic beyond r = 5.1 cm | 10% | 0% | 10% | |
+| Ohmic in capped cells | 40% | 20% | 38% | |
+| outer annulus rho / (1+a)T | 3.2e-3 / 2690 | 4.3e-3 / 1275 | 2.9e-3 / 3300 | |
+| V_arc counter | 20.4 | 25.8 | 19.9 | |
+| P_wall kW | 56.2 | 58.2 | 50.3 | |
+
+Reading. (1) Raising the cap removes the current from the cold outer
+gas and gives the backplate profile Cory's SHAPE, but the outer gas
+then cools, thickens and stops leaving: the chamber fills at 2e-3 kg/s
+and the wall pressure climbs back toward the exit-throughput floor
+(792 -> 846 -> 911 over segs 2-4). (2) A hot wall keeps the outer gas
+hotter (3300 K) but at the same density, so the pressure goes UP
+(1630, 3.4x Cory at the wall), the anode-face push grows to -9.6 N
+and the profile flattens (rms 0.89). Both levers act on the outer
+gas's temperature; neither touches its DENSITY, and the density is
+the problem: the outer annulus holds ~40% of the chamber mass at
+3-4e-3 kg/m^3 in every state, ten times the exit density, because the
+ring-injected 46% of mdot at r = 3.5-4.1 cm is never entrained into
+the accelerated core. Cory's 465 Pa at the wall against 1660 at the
+root needs a thin outer plasma that still conducts (the pinch
+gradient reaching r_ch): the real thruster ionises and accelerates
+the whole flow. That is not a boundary condition or a transport
+coefficient; it is the ionisation / entrainment physics of the outer
+flow (single-T Saha equilibrium in cold dense gas gives alpha ~ 0 and
+therefore no current, no j x B, no acceleration there). Owner's call.
+
+Numerics stayed clean in both runs (no cold exit cells, closures at
+1e-9, electrode families 0). Cap seg 5 still running at 02:00.
+
+Cap 1e-2 seg 5 (02:24, chain closed): mass 5.30e-6 (+6%/seg), wall
+970 (+6%/seg), tip 2905, exit + side 4.47e-3, V_arc 26.1; T_exhaust
+and the profile from run.log below the table in NEXT_SESSION. Still
+filling toward the exit floor; no plateau, no further segments queued.
+No chain processes running as of 02:25.

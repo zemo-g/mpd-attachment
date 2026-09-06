@@ -1,7 +1,9 @@
 -- rail/mpd_solver.rail -- Phase 2 solver: axisymmetric resistive MHD with
--- Hall term, azimuthal-only self-field B_theta. Anode, backplate, wall and
+-- Hall term, azimuthal-only self-field B_theta. Backplate, wall and
 -- inlet attachment PRESCRIBED as B_theta Dirichlet faces
--- (rail/mhd_pbt.rail). The CATHODE is FREE when btp slot 0 is 1.0
+-- (rail/mhd_pbt.rail). The ANODE is FREE when btp slot 1 is 1.0
+-- (mp_set_free_anode, 2026-09-05): same ideal-conductor rule as the
+-- cathode on its bore (d(rB)/dr = 0), inner and outer faces (dB/dz = 0). The CATHODE is FREE when btp slot 0 is 1.0
 -- (mp_set_free_cath, 2026-09-03): an ideal conductor with no sheath has
 -- E_tangential = 0, and with the normal velocity zero at the face that is
 -- eta j_tangential = 0, i.e. the current enters the cathode NORMALLY.
@@ -96,17 +98,94 @@ eos_lnl n a t =
   let lnl_raw = 23.0 - 0.5 * log ne_c + 1.5 * log t_c
   if lnl_raw < 2.0 then 2.0 else if lnl_raw > 20.0 then 20.0 else lnl_raw
 
+
+-- ── electron transport in a magnetised, partially ionised gas (2026-09-05) ──
+-- Three corrections from notes/audit_2026-09-05.md finding 4:
+-- (a) sigma_en(T): the constant 1e-19 m^2 is the 5-10 eV argon value; the
+--     momentum-transfer cross section has its Ramsauer minimum (~1e-21)
+--     near 0.25 eV and is ~1.5e-20 at 1 eV. eos_sig_en is the Maxwellian
+--     average int sigma_m(x kT) x e^-x dx of the Phelps/LXCat compilation
+--     (anchors read to ~20%; tools/audit_closure_2026-09-05.py's sibling
+--     script computed the table), in 1e-20 m^2, log-log between nodes,
+--     clamped at 0.03 and 10 eV. It multiplies the e-n Drude term, whose
+--     coefficient 2.2046e-8 was built on 1e-19.
+-- (b) eta_perp(x): j lies in the r-z plane and B is azimuthal, so the
+--     current is perpendicular to B everywhere. The Spitzer coefficient
+--     5.2e-5 is the PARALLEL value (0.51 of Drude); Braginskii's
+--     transverse resistivity is Drude x [1 - (a1' x^2 + a0')/(x^4 +
+--     d1 x^2 + d0)] with Z = 1 constants a0' 1.837, a1' 6.416, d0 3.7703,
+--     d1 14.79, which is 0.5128 Drude at x = 0 and Drude at x >> 1. The
+--     e-i term carries that bracket normalised to 1 at x = 0 (so the
+--     unmagnetised value is unchanged); the e-n Drude term is isotropic.
+--     x = omega_ce tau with tau = 1/(nu_ei + nu_en), nu_ei = 2.91e-12
+--     n_e lnL / T_eV^1.5 (NRL, n_e in m^-3), nu_en = n_n sigma_en v_te.
+-- (c) kappa_e_perp(x) for the wall sink: heat flows to the wall across
+--     B, Braginskii (g1' x^2 + g0')/(x^4 + d1 x^2 + d0) with g0' 11.92,
+--     g1' 4.664, normalised by g0'/d0 = 3.1616 (the parallel coefficient
+--     already in wall_kappa): 1 at x = 0, 1.475/x^2 at large x.
+-- Selftest checks 30 (new reference), 49.
+eos_sig_seg t t0 t1 s0 s1 =
+  let f = (log t - log t0) / (log t1 - log t0)
+  exp (log s0 + f * (log s1 - log s0))
+
+-- Maxwellian-averaged argon e-n momentum-transfer cross section, 1e-20 m^2
+eos_sig_en t_eV =
+  let t = t_eV
+  if t < 0.03 then 2.512
+  else if t < 0.05 then 1.0 * eos_sig_seg t 0.03 0.05 2.512 1.594
+  else if t < 0.1 then 1.0 * eos_sig_seg t 0.05 0.1 1.594 0.768
+  else if t < 0.2 then 1.0 * eos_sig_seg t 0.1 0.2 0.768 0.577
+  else if t < 0.3 then 1.0 * eos_sig_seg t 0.2 0.3 0.577 0.816
+  else if t < 0.5 then 1.0 * eos_sig_seg t 0.3 0.5 0.816 1.604
+  else if t < 0.7 then 1.0 * eos_sig_seg t 0.5 0.7 1.604 2.521
+  else if t < 1.0 then 1.0 * eos_sig_seg t 0.7 1.0 2.521 3.932
+  else if t < 1.5 then 1.0 * eos_sig_seg t 1.0 1.5 3.932 6.101
+  else if t < 2.0 then 1.0 * eos_sig_seg t 1.5 2.0 6.101 7.891
+  else if t < 3.0 then 1.0 * eos_sig_seg t 2.0 3.0 7.891 10.342
+  else if t < 5.0 then 1.0 * eos_sig_seg t 3.0 5.0 10.342 12.242
+  else if t < 7.0 then 1.0 * eos_sig_seg t 5.0 7.0 12.242 12.313
+  else if t < 10.0 then 1.0 * eos_sig_seg t 7.0 10.0 12.313 11.429
+  else 11.429
+
+-- Hall parameter omega_ce tau (tau from e-i and e-n collisions)
+eos_hall_x n a t b =
+  let t_eV = t / 11604.518
+  let t_c = if t_eV < 0.1 then 0.1 else t_eV
+  let ac = if a < 0.00000001 then 0.00000001 else a
+  let lnl = 1.0 * eos_lnl n ac t
+  let nu_ei = 2.91e-12 * ac * n * lnl / (t_c * sqrt t_c)
+  let sg = 1.0 * eos_sig_en t_eV
+  let vte = sqrt (t * 3.4788e7)
+  let nu_en = (1.0 - ac) * n * sg * 1.0e-20 * vte
+  let bb = if b < 0.0 then 0.0 - b else b
+  1.758820e11 * bb / (nu_ei + nu_en)
+
+-- Braginskii transverse resistivity bracket normalised to 1 at x = 0
+eos_eta_perp_fac x =
+  let x2 = x * x
+  let br = 1.0 - (6.416 * x2 + 1.837) / (x2 * x2 + 14.79 * x2 + 3.7703)
+  br / 0.5127708670
+
+-- Braginskii transverse electron thermal conductivity factor, 1 at x = 0
+eos_kappa_perp_fac x =
+  let x2 = x * x
+  (4.664 * x2 + 11.92) / (x2 * x2 + 14.79 * x2 + 3.7703) / 3.1615521311
+
 -- thermal conductivity of the cell gas, W/m/K (see the wall-sink note)
 --   kappa_e = 3.2 k^2 T (n_e tau_e) / m_e,  n_e tau_e = 3.44e11 T_eV^1.5 / lnL
 --           = 2.30349e-4 T_K T_eV^1.5 / lnL
-wall_kappa n a t =
+-- b = |B| in the cell (2026-09-05): the electron part is reduced across
+-- the field by eos_kappa_perp_fac (b = 0 reproduces the old value)
+wall_kappa n a t b =
   let kn = 0.0177 * exp (0.7 * log (t / 300.0))
   if a <= 0.0 then kn
   else
     let lnl = 1.0 * eos_lnl n a t
     let t_eV = t / 11604.518
     let ke = 0.000230348819 * t * t_eV * sqrt t_eV / lnl
-    (1.0 - a) * kn + a * ke
+    let x = 1.0 * eos_hall_x n a t b
+    let kf = 1.0 * eos_kappa_perp_fac x
+    (1.0 - a) * kn + a * ke * kf
 
 -- inlet (argon 6 g/s, 54% annulus / 46% ring, 300 m/s, 300 K)
 in_v = 300.0
@@ -364,13 +443,157 @@ mv_face_r2 st scr fb j i os od =
     let _ = float_arr_set fb (od + 3) (enr - enl)
     float_arr_set fb (od + 4) (btr - btl)
 
+
+-- ── solid faces carry no field or energy in the hyperbolic step (2026-09-05) ──
+-- A face between a fluid cell and an electrode/wall/backplate mirror
+-- ghost (masks 1, 2, 4, 5) has v_n = 0, so the physical hyperbolic flux
+-- of B (v_n B) and of energy (v_n (E + p_t)) through it is zero. The
+-- first-order pair form did not give zero: the ghost's B differs from
+-- the cell's (Neumann barrel B_f r_f/r_g, Dirichlet 2 face - cell), so
+-- S[4] = v_n (B_c - B_g), S[3] = 2 v_n (me_c - me_g), and the LxF jump
+-- terms (dx/4dt)(B_g - B_c), (dx/4dt)(me_g - me_c) moved 0.5 T m^3/s of
+-- B and 60 kW of magnetic energy through the free-cathode barrel per
+-- second (notes/audit_2026-09-05.md finding 3). Now those four slots
+-- are zeroed on every solid face; mass (0 by mirror), tangential
+-- momentum (0) and the normal-momentum pair form (the wall force) are
+-- unchanged. The axis (mask 3) is a true symmetry and keeps its form;
+-- inlet (6) and exit (7) have their own faces. Selftest check 46.
+mv_is_solid g = if g == 1 then true else if g == 2 then true else if g == 4 then true else g == 5
+
+mv_face_solid fb os od =
+  let _ = float_arr_set fb (os + 3) 0.0
+  let _ = float_arr_set fb (os + 4) 0.0
+  let _ = float_arr_set fb (od + 3) 0.0
+  float_arr_set fb (od + 4) 0.0
+
+-- ── corner ghosts: one ghost cell, two faces, two states (2026-09-05) ──
+-- The cathode tip corner (mp_j_cath, mp_i_tip) is stored in the TIP form
+-- (mirror of (19,81) in z) and was also read by the r-face of (20,80);
+-- the anode corners (mp_j_anode, mp_i_an0/an1) are stored in the BORE
+-- form (mirror of (102,i) in r) and were also read by the z-faces of
+-- (103,82) and (103,91). Across those three faces rho_g != rho_c and
+-- m_n,g != -m_n,c, so the LxF pair form leaked mass, momentum and
+-- energy through solid corners (cathode -8.5e-5 kg/s = 1.4% of mdot,
+-- anode 2.3e-4 kg/s each way; notes/audit_2026-09-05.md finding 3). Now
+-- those faces build the proper mirror state for THEIR normal on the fly
+-- (mv_face_r1s / mv_face_z1s take both states from 6-float arrays:
+-- rho, mr, mz, en, bt, p) and are then treated as solid faces. The
+-- stored ghost cell keeps serving its other face unchanged. The face B
+-- for the alternate normal comes from scr: the free-cathode flag and
+-- the three prescribed alternate face values are copied from btp into
+-- scr_cflag / scr_cbt* by mv_step_hyp (mp_build_btp puts them in btp
+-- slots (0,2), (0,3), (0,4): axis-row cells never read as faces).
+-- mv_bmass_face / phase2_massaudit book these faces as 0 (they are).
+-- Selftest check 47.
+scr_cflag = 55642
+scr_cbt_cath = 55643
+scr_cbt_aif = 55644
+scr_cbt_aof = 55645
+scr_aflag = 55646
+
+mv_cell_state st scr j i gs =
+  let _ = float_arr_set gs 0 (mp_get st mp_f_rho j i)
+  let _ = float_arr_set gs 1 (mp_get st mp_f_mr j i)
+  let _ = float_arr_set gs 2 (mp_get st mp_f_mz j i)
+  let _ = float_arr_set gs 3 (mp_get st mp_f_en j i)
+  let _ = float_arr_set gs 4 (mp_get st mp_f_bt j i)
+  float_arr_set gs 5 (float_arr_get scr (scr_parr + j * mp_nz + i))
+
+-- mirror of fluid cell (j,i) with momentum signs (sr, sz) and ghost B btg
+mv_mirror_state st scr j i gs sr sz btg =
+  let rho = mp_get st mp_f_rho j i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr j i * sr
+  let mz = mp_get st mp_f_mz j i * sz
+  let ei = 1.0 * mv_eint st j i
+  let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+  let me = 0.5 * btg * btg * inv_mu0
+  let _ = float_arr_set gs 0 rho
+  let _ = float_arr_set gs 1 mr
+  let _ = float_arr_set gs 2 mz
+  let _ = float_arr_set gs 3 (ei + ke + me)
+  let _ = float_arr_set gs 4 btg
+  float_arr_set gs 5 (float_arr_get scr (scr_parr + j * mp_nz + i))
+
+mv_face_r1s fb ga gb os od =
+  let _ = mv_fb_zero5 fb os
+  let _ = mv_fr_add fb os (float_arr_get ga 0) (float_arr_get ga 1) (float_arr_get ga 2) (float_arr_get ga 3) (float_arr_get ga 4) (float_arr_get ga 5)
+  let _ = mv_fr_add fb os (float_arr_get gb 0) (float_arr_get gb 1) (float_arr_get gb 2) (float_arr_get gb 3) (float_arr_get gb 4) (float_arr_get gb 5)
+  let _ = float_arr_set fb od (float_arr_get gb 0 - float_arr_get ga 0)
+  let _ = float_arr_set fb (od + 1) (float_arr_get gb 1 - float_arr_get ga 1)
+  let _ = float_arr_set fb (od + 2) (float_arr_get gb 2 - float_arr_get ga 2)
+  let _ = float_arr_set fb (od + 3) (float_arr_get gb 3 - float_arr_get ga 3)
+  let _ = float_arr_set fb (od + 4) (float_arr_get gb 4 - float_arr_get ga 4)
+  mv_face_solid fb os od
+
+mv_face_z1s fb ga gb os od =
+  let _ = mv_fb_zero5 fb os
+  let _ = mv_fz_add fb os (float_arr_get ga 0) (float_arr_get ga 1) (float_arr_get ga 2) (float_arr_get ga 3) (float_arr_get ga 4) (float_arr_get ga 5)
+  let _ = mv_fz_add fb os (float_arr_get gb 0) (float_arr_get gb 1) (float_arr_get gb 2) (float_arr_get gb 3) (float_arr_get gb 4) (float_arr_get gb 5)
+  let _ = float_arr_set fb od (float_arr_get gb 0 - float_arr_get ga 0)
+  let _ = float_arr_set fb (od + 1) (float_arr_get gb 1 - float_arr_get ga 1)
+  let _ = float_arr_set fb (od + 2) (float_arr_get gb 2 - float_arr_get ga 2)
+  let _ = float_arr_set fb (od + 3) (float_arr_get gb 3 - float_arr_get ga 3)
+  let _ = float_arr_set fb (od + 4) (float_arr_get gb 4 - float_arr_get ga 4)
+  mv_face_solid fb os od
+
+-- cathode corner, r-face between ghost (19,80) and fluid (20,80): the
+-- ghost side is the BARREL mirror of (20,80)
+mv_face_rcorner st scr fb j i os od =
+  let ga = float_arr_new 6 0.0
+  let gb = float_arr_new 6 0.0
+  let jf = j + 1
+  let bf = mp_get st mp_f_bt jf i
+  let free = float_arr_get scr scr_cflag > 0.5
+  let btg = if free then bf * (to_float jf - 0.5) / (to_float j - 0.5)
+            else 2.0 * float_arr_get scr scr_cbt_cath - bf
+  let _ = mv_mirror_state st scr jf i ga (0.0 - 1.0) 1.0 btg
+  let _ = mv_cell_state st scr jf i gb
+  mv_face_r1s fb ga gb os od
+
+-- anode inner corner, z-face between fluid (103,82) and ghost (103,83):
+-- the ghost side is the INNER-FACE mirror of (103,82)
+mv_face_zcorner_in st scr fb j i os od =
+  let ga = float_arr_new 6 0.0
+  let gb = float_arr_new 6 0.0
+  let afree = float_arr_get scr scr_aflag > 0.5
+  let btg = if afree then mp_get st mp_f_bt j i else 2.0 * float_arr_get scr scr_cbt_aif - mp_get st mp_f_bt j i
+  let _ = mv_cell_state st scr j i ga
+  let _ = mv_mirror_state st scr j i gb 1.0 (0.0 - 1.0) btg
+  mv_face_z1s fb ga gb os od
+
+-- anode outer corner, z-face between ghost (103,90) and fluid (103,91):
+-- the ghost side is the OUTER-FACE mirror of (103,91)
+mv_face_zcorner_out st scr fb j i os od =
+  let ga = float_arr_new 6 0.0
+  let gb = float_arr_new 6 0.0
+  let fi = i + 1
+  let afree = float_arr_get scr scr_aflag > 0.5
+  let btg = if afree then mp_get st mp_f_bt j fi else 2.0 * float_arr_get scr scr_cbt_aof - mp_get st mp_f_bt j fi
+  let _ = mv_mirror_state st scr j fi ga 1.0 (0.0 - 1.0) btg
+  let _ = mv_cell_state st scr j fi gb
+  mv_face_z1s fb ga gb os od
+
+-- is the (dj,di) face of fluid cell (j,i) one of the three corner faces?
+mv_is_corner_face j i dj di =
+  if dj == 0 - 1 then (if j == mp_j_fluid0 then i == mp_i_tip else false)
+  else if di == 1 then (if j == mp_j_anode then i == mp_i_aif else false)
+  else if di == 0 - 1 then (if j == mp_j_anode then i == mp_i_aof else false)
+  else false
+
 mv_face_r st scr m fb j i os od =
   let g0 = if j < 1 then 1 else arr_get m ((j - 1) * mp_nz + i)
   let g1 = arr_get m (j * mp_nz + i)
   let g2 = arr_get m ((j + 1) * mp_nz + i)
   let g3 = if j + 2 >= mp_nr then 1 else arr_get m ((j + 2) * mp_nz + i)
   let ok = if g0 == 0 then if g1 == 0 then if g2 == 0 then g3 == 0 else false else false else false
-  if ok then mv_face_r2 st scr fb j i os od else mv_face_r1 st scr fb j i os od
+  if ok then mv_face_r2 st scr fb j i os od
+  else if (if j == mp_j_cath then i == mp_i_tip else false) then mv_face_rcorner st scr fb j i os od
+  else if g2 == 8 then mv_face_rout st scr fb j i os od
+  else
+    let _ = mv_face_r1 st scr fb j i os od
+    let sol = if mv_is_solid g1 then true else mv_is_solid g2
+    if sol then mv_face_solid fb os od else 0
 
 -- z-direction twins: face between (j,i) and (j,i+1)
 mv_face_z1 st scr fb j i os od =
@@ -471,6 +694,119 @@ mv_face_zin st scr fb j i os od =
   let _ = float_arr_set fb (od + 2) 0.0
   float_arr_set fb (od + 3) 0.0
 
+
+-- ── exit face: choked / upwind outflow (2026-09-05) ──
+-- History: the exit face was mv_face_z1 on the pressure-outlet ghost, so
+-- on a SUBSONIC exit cell the ghost's amb_p thermal energy sat in the
+-- LxF jump d and the cell lost (en_c - en_g)/4 per step, a quarter of
+-- its thermal energy, until c_s fell below v_z: the exit choked by
+-- cooling (13 cells at 30-100 K carrying 9% of mdot, 16 kW through the
+-- face, sonic line pinned at the exit plane; notes/audit_2026-09-05.md
+-- finding 2). Now the face state is the physical outlet of a duct into
+-- a low-pressure tank, from the cell's own state, with NO jump term:
+--   v_z >= c_s      supersonic: F(U_c) (upwind, as before)
+--   0 < v_z < c_s   isentropic expansion of the cell state to amb_p on
+--                   the outgoing invariant u + 2c/(gamma-1); if that
+--                   would pass M = 1 the exit is choked and the face
+--                   carries the SONIC state: c* = (u + 3 c)/4,
+--                   rho* = rho (c*/c)^3, p* = p (c*/c)^5 (gamma 5/3,
+--                   composition frozen: the cell's ionization energy per
+--                   unit mass rides along)
+--   v_z <= 0        backflow: unchanged central + jump form on the
+--                   ambient ghost (the incoming characteristic needs it)
+-- The bt slot keeps the pair form (B = 0 at the face, ghost -bt). The
+-- gas fluxes drop the face magnetic pressure (it is zero there).
+-- mv_bmass_face reads the same helper so the mass gate stays exact.
+mv_exit_state st j i ex = mv_out_state st j i mp_f_mz ex
+
+-- outflow face state for the normal momentum field f (mp_f_mz at the
+-- exit plane, mp_f_mr at the open radial boundary)
+mv_out_state st j i f ex =
+  let rho = mp_get st mp_f_rho j i
+  let rs = if rho < rho_floor then rho_floor else rho
+  let u = mp_get st f j i / rs
+  let p = 1.0 * mv_pressure st j i
+  let ei = 1.0 * mv_eint st j i
+  let eion = (ei - 1.5 * p) / rs
+  let cs = sqrt (1.6666666666666667 * p / rs)
+  if u >= cs then
+    let _ = float_arr_set ex 0 rs
+    let _ = float_arr_set ex 1 u
+    let _ = float_arr_set ex 2 p
+    float_arr_set ex 3 ei
+  else
+    let cst = 0.25 * (u + 3.0 * cs)
+    let q = cst / cs
+    let pst = p * q * q * q * q * q
+    let pa = 0.0 + amb_p
+    if pst >= pa then
+      let rst = rs * q * q * q
+      let _ = float_arr_set ex 0 rst
+      let _ = float_arr_set ex 1 cst
+      let _ = float_arr_set ex 2 pst
+      float_arr_set ex 3 (1.5 * pst + rst * eion)
+    else
+      let qa = exp (0.2 * log (pa / p))
+      let ca = cs * qa
+      let ua = u + 3.0 * (cs - ca)
+      let ra = rs * qa * qa * qa
+      let _ = float_arr_set ex 0 ra
+      let _ = float_arr_set ex 1 ua
+      let _ = float_arr_set ex 2 pa
+      float_arr_set ex 3 (1.5 * pa + ra * eion)
+
+mv_face_zout st scr fb j i os od =
+  let _ = mv_face_z1 st scr fb j i os od
+  let mzc = mp_get st mp_f_mz j i
+  if mzc <= 0.0 then 0
+  else
+    let ex = float_arr_new 4 0.0
+    let _ = mv_exit_state st j i ex
+    let rf = float_arr_get ex 0
+    let uf = float_arr_get ex 1
+    let pf = float_arr_get ex 2
+    let ef = float_arr_get ex 3
+    let rho = mp_get st mp_f_rho j i
+    let rs = if rho < rho_floor then rho_floor else rho
+    let vr = mp_get st mp_f_mr j i / rs
+    let etot = ef + 0.5 * rf * (uf * uf + vr * vr)
+    let _ = float_arr_set fb os (2.0 * rf * uf)
+    let _ = float_arr_set fb (os + 1) (2.0 * rf * vr * uf)
+    let _ = float_arr_set fb (os + 2) (2.0 * (rf * uf * uf + pf))
+    let _ = float_arr_set fb (os + 3) (2.0 * (etot + pf) * uf)
+    let _ = float_arr_set fb od 0.0
+    let _ = float_arr_set fb (od + 1) 0.0
+    let _ = float_arr_set fb (od + 2) 0.0
+    float_arr_set fb (od + 3) 0.0
+
+-- open radial boundary face (mask 8, 2026-09-05): between fluid (j,i) =
+-- (mp_nrm2, i) and the ghost (mp_nrm1, i), same logic as mv_face_zout
+-- with r as the normal: outflow carries the choked / expanded state
+-- from mv_out_state on mp_f_mr, no jump; backflow keeps the pair form.
+mv_face_rout st scr fb j i os od =
+  let _ = mv_face_r1 st scr fb j i os od
+  let mrc = mp_get st mp_f_mr j i
+  if mrc <= 0.0 then 0
+  else
+    let ex = float_arr_new 4 0.0
+    let _ = mv_out_state st j i mp_f_mr ex
+    let rf = float_arr_get ex 0
+    let uf = float_arr_get ex 1
+    let pf = float_arr_get ex 2
+    let ef = float_arr_get ex 3
+    let rho = mp_get st mp_f_rho j i
+    let rs = if rho < rho_floor then rho_floor else rho
+    let vz = mp_get st mp_f_mz j i / rs
+    let etot = ef + 0.5 * rf * (uf * uf + vz * vz)
+    let _ = float_arr_set fb os (2.0 * rf * uf)
+    let _ = float_arr_set fb (os + 1) (2.0 * (rf * uf * uf + pf))
+    let _ = float_arr_set fb (os + 2) (2.0 * rf * vz * uf)
+    let _ = float_arr_set fb (os + 3) (2.0 * (etot + pf) * uf)
+    let _ = float_arr_set fb od 0.0
+    let _ = float_arr_set fb (od + 1) 0.0
+    let _ = float_arr_set fb (od + 2) 0.0
+    float_arr_set fb (od + 3) 0.0
+
 mv_face_z st scr m fb j i os od =
   let g0 = if i < 1 then 1 else arr_get m (j * mp_nz + i - 1)
   let g1 = arr_get m (j * mp_nz + i)
@@ -479,7 +815,13 @@ mv_face_z st scr m fb j i os od =
   let ok = if g0 == 0 then if g1 == 0 then if g2 == 0 then g3 == 0 else false else false else false
   if ok then mv_face_z2 st scr fb j i os od
   else if g1 == 6 then mv_face_zin st scr fb j i os od
-  else mv_face_z1 st scr fb j i os od
+  else if g2 == 7 then mv_face_zout st scr fb j i os od
+  else if (if j == mp_j_anode then i == mp_i_aif else false) then mv_face_zcorner_in st scr fb j i os od
+  else if (if j == mp_j_anode then i == mp_i_an1 else false) then mv_face_zcorner_out st scr fb j i os od
+  else
+    let _ = mv_face_z1 st scr fb j i os od
+    let sol = if mv_is_solid g1 then true else mv_is_solid g2
+    if sol then mv_face_solid fb os od else 0
 
 -- ── ghost fill for the full state ──
 -- gas: mirror with normal momentum negated (free slip). The ghost copies
@@ -528,6 +870,7 @@ mv_ghost_cell st btp m j i =
     let _ = mp_put st mp_f_en j i (rho_in * kT_m / gamma_m1 + ke + me)
     mp_put st mp_f_bt j i btg
   else if mk == 7 then mv_ghost_exit st j i
+  else if mk == 8 then mv_ghost_rout st j i
   else if mk == 1 then
     -- cathode. Free (btp slot 0 = 1.0): Neumann, dB/dz = 0 on the tip,
     -- d(rB)/dr = 0 on the barrel. Prescribed: Dirichlet 2 face - fluid.
@@ -545,14 +888,22 @@ mv_ghost_cell st btp m j i =
       mv_ghost_gas st j i mp_j_fluid0 i (0.0 - 1.0) 1.0 btg
     else mv_ghost_solid st btp j i
   else
+    -- anode. Free (btp slot 1 = 1.0, 2026-09-05): Neumann, d(rB)/dr = 0
+    -- on the bore, dB/dz = 0 on the inner and outer faces. Prescribed:
+    -- Dirichlet 2 face - fluid. The corners keep the bore form.
+    let afree = float_arr_get btp 1 > 0.5
     if j == mp_j_anode then
-      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt mp_j_anodem1 i
+      let bf = mp_get st mp_f_bt mp_j_anodem1 i
+      let btg = if afree then bf * (to_float mp_j_anodem1 - 0.5) / (to_float mp_j_anode - 0.5)
+                else 2.0 * float_arr_get btp k - bf
       mv_ghost_gas st j i mp_j_anodem1 i (0.0 - 1.0) 1.0 btg
     else if i == mp_i_an0 then
-      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_aif
+      let bf = mp_get st mp_f_bt j mp_i_aif
+      let btg = if afree then bf else 2.0 * float_arr_get btp k - bf
       mv_ghost_gas st j i j mp_i_aif 1.0 (0.0 - 1.0) btg
     else if i == mp_i_an1 then
-      let btg = 2.0 * float_arr_get btp k - mp_get st mp_f_bt j mp_i_aof
+      let bf = mp_get st mp_f_bt j mp_i_aof
+      let btg = if afree then bf else 2.0 * float_arr_get btp k - bf
       mv_ghost_gas st j i j mp_i_aof 1.0 (0.0 - 1.0) btg
     else mv_ghost_solid st btp j i
 
@@ -630,6 +981,36 @@ mv_exit_probe st m ex j =
         float_arr_set ex 4 (float_arr_get ex 4 + 1.0)
       else 0.0
     mv_exit_probe st m ex (j + 1)
+
+-- open radial boundary ghost (mask 8): the r-twin of mv_ghost_exit on
+-- the fluid cell (mp_nrm2, i); B = 0 on that boundary (all current has
+-- closed upstream of the anode outer face), ghost -bt.
+mv_ghost_rout st j i =
+  let rho = mp_get st mp_f_rho mp_nrm2 i
+  let rho_safe = if rho < rho_floor then rho_floor else rho
+  let mr = mp_get st mp_f_mr mp_nrm2 i
+  let vr = 1.0 * mr / rho_safe
+  let p = 1.0 * mv_pressure st mp_nrm2 i
+  let cs = 1.0 * sqrt (1.6666666666666667 * p / rho_safe)
+  let btg = 0.0 - mp_get st mp_f_bt mp_nrm2 i
+  let me = 0.5 * btg * btg * inv_mu0
+  if vr >= cs then mv_ghost_gas st j i mp_nrm2 i 1.0 1.0 btg
+  else if vr > 0.0 then
+    let mz = mp_get st mp_f_mz mp_nrm2 i
+    let ke = 0.5 * (mr * mr + mz * mz) / rho_safe
+    let pa = 0.0 + amb_p
+    let eig = if p > pa then pa / gamma_m1 else 1.0 * mv_eint st mp_nrm2 i
+    let _ = mp_put st mp_f_rho j i rho
+    let _ = mp_put st mp_f_mr j i mr
+    let _ = mp_put st mp_f_mz j i mz
+    let _ = mp_put st mp_f_en j i (eig + ke + me)
+    mp_put st mp_f_bt j i btg
+  else
+    let _ = mp_put st mp_f_rho j i amb_rho
+    let _ = mp_put st mp_f_mr j i 0.0
+    let _ = mp_put st mp_f_mz j i 0.0
+    let _ = mp_put st mp_f_en j i (amb_p / gamma_m1 + me)
+    mp_put st mp_f_bt j i btg
 
 mv_ghost_solid st btp j i =
   let btg = float_arr_get btp (j * mp_nz + i)
@@ -777,8 +1158,13 @@ mv_eta_calc st j i =
   -- the same Saha inversion; the alpha floor makes n_e tiny in cold
   -- gas, where the clip at 20 bounds it and eta_en dominates anyway.
   let lnl = 1.0 * eos_lnl n a t
-  let e_ei = 5.2e-5 * lnl / (t_c * sqrt t_c)
-  let e_en = 2.2046e-8 * sqrt t * (1.0 - a) / a
+  -- transverse Spitzer + sigma_en(T) (2026-09-05, see the transport block)
+  let b = mp_get st mp_f_bt j i
+  let x = 1.0 * eos_hall_x n a t b
+  let pf = 1.0 * eos_eta_perp_fac x
+  let sg = 1.0 * eos_sig_en t_eV
+  let e_ei = 5.2e-5 * lnl / (t_c * sqrt t_c) * pf
+  let e_en = 2.2046e-8 * sqrt t * (1.0 - a) / a * sg * 0.1
   let eta = e_ei + e_en
   if eta > eta_cap then eta_cap else if eta < eta_floor then eta_floor else eta
 
@@ -980,6 +1366,14 @@ mv_tri_neu_l scr fac =
   let _ = float_arr_set scr scr_tri_b (float_arr_get scr scr_tri_b + a0 * fac)
   float_arr_set scr scr_tri_a 0.0
 
+-- Neumann fold-in at the RIGHT end (free anode, 2026-09-05), ghost =
+-- fac * cell: fac = 1 on a z-line, r_cell / r_ghost on an r-line ending
+-- at the bore (c carries dp rp/rfp, so the outer-face flux cancels).
+mv_tri_neu_r scr n fac =
+  let cn = float_arr_get scr (scr_tri_c + n - 1)
+  let _ = float_arr_set scr (scr_tri_b + n - 1) (float_arr_get scr (scr_tri_b + n - 1) + cn * fac)
+  float_arr_set scr (scr_tri_c + n - 1) 0.0
+
 mv_thomas_fwd scr n p =
   if p >= n then 0
   else
@@ -990,10 +1384,12 @@ mv_thomas_fwd scr n p =
 
 -- write one solved value with the magnetic-energy pairing (per-sweep
 -- pairings telescope to the exact me change; p untouched by transport)
-mv_diff_write ns j i x =
+mv_diff_write ns scr j i x =
   let bold = mp_get ns mp_f_bt j i
   let db = x - bold
   let dme = (bold * db + 0.5 * db * db) * inv_mu0
+  let vol = mv_tau * mp_r_of j * mp_dr * mp_dz
+  let _ = float_arr_set scr scr_dme (float_arr_get scr scr_dme + dme * vol)
   let _ = mp_put ns mp_f_en j i (mp_get ns mp_f_en j i + dme)
   mp_put ns mp_f_bt j i x
 
@@ -1001,14 +1397,14 @@ mv_zback ns scr j i0 p xn =
   if p < 0 then 0
   else
     let x = (float_arr_get scr (scr_tri_d + p) - float_arr_get scr (scr_tri_c + p) * xn) / float_arr_get scr (scr_tri_b + p)
-    let _ = mv_diff_write ns j (i0 + p) x
+    let _ = mv_diff_write ns scr j (i0 + p) x
     mv_zback ns scr j i0 (p - 1) x
 
 mv_rback ns scr i j0 p xn =
   if p < 0 then 0
   else
     let x = (float_arr_get scr (scr_tri_d + p) - float_arr_get scr (scr_tri_c + p) * xn) / float_arr_get scr (scr_tri_b + p)
-    let _ = mv_diff_write ns (j0 + p) i x
+    let _ = mv_diff_write ns scr (j0 + p) i x
     mv_rback ns scr i j0 (p - 1) x
 
 -- last fluid index of the run starting at a known-fluid cell
@@ -1029,10 +1425,16 @@ mv_zscan ns btp m scr dt j i =
     let n = i1 - i + 1
     let _ = mv_zco ns scr dt j i n 0
     -- left end on a cathode tip cell with the cathode free: Neumann
-    let lfree = if float_arr_get btp 0 > 0.5 then arr_get m (j * mp_nz + i - 1) == 1 else false
+    let ml = arr_get m (j * mp_nz + i - 1)
+    let lfc = if float_arr_get btp 0 > 0.5 then ml == 1 else false
+    let lfa = if float_arr_get btp 1 > 0.5 then ml == 2 else false
+    let lfree = if lfc then true else lfa
     let _ = if lfree then mv_tri_neu_l scr 1.0
             else mv_tri_dir_l scr (float_arr_get btp (j * mp_nz + i - 1))
-    let _ = mv_tri_dir_r scr n (float_arr_get btp (j * mp_nz + i1 + 1))
+    -- right end on the anode inner face with the anode free: Neumann
+    let rfree = if float_arr_get btp 1 > 0.5 then arr_get m (j * mp_nz + i1 + 1) == 2 else false
+    let _ = if rfree then mv_tri_neu_r scr n 1.0
+            else mv_tri_dir_r scr n (float_arr_get btp (j * mp_nz + i1 + 1))
     let _ = mv_thomas_fwd scr n 1
     let _ = mv_zback ns scr j i (n - 1) 0.0
     mv_zscan ns btp m scr dt j (i1 + 2)
@@ -1049,7 +1451,10 @@ mv_rscan ns btp m scr dt i j =
     let _ = if j == 1 then 0.0
             else if lfree then mv_tri_neu_l scr ((to_float j - 0.5) / (to_float j - 1.5))
             else mv_tri_dir_l scr (float_arr_get btp ((j - 1) * mp_nz + i))
-    let _ = mv_tri_dir_r scr n (float_arr_get btp ((j1 + 1) * mp_nz + i))
+    -- right end on the anode bore with the anode free: Neumann on rB
+    let rfree = if float_arr_get btp 1 > 0.5 then arr_get m ((j1 + 1) * mp_nz + i) == 2 else false
+    let _ = if rfree then mv_tri_neu_r scr n ((to_float j1 - 0.5) / (to_float j1 + 0.5))
+            else mv_tri_dir_r scr n (float_arr_get btp ((j1 + 1) * mp_nz + i))
     let _ = mv_thomas_fwd scr n 1
     let _ = mv_rback ns scr i j (n - 1) 0.0
     mv_rscan ns btp m scr dt i (j1 + 2)
@@ -1122,7 +1527,8 @@ mv_wall_cell st m fb dt j i =
         let g3 = to_float (wzp + wzm) * gz
         let g = g1 + g2 + g3
         let a = 1.0 * eos_alpha n t
-        let kap = 1.0 * wall_kappa n a t
+        let bw = mp_get st mp_f_bt j i
+        let kap = 1.0 * wall_kappa n a t bw
         let de_raw = kap * (t - t_wall) * dt * g
         let de = if de_raw > 0.5 * ei then 0.5 * ei else de_raw
         let _ = mp_put st mp_f_en j i (mp_get st mp_f_en j i - de)
@@ -1172,6 +1578,68 @@ mv_floor_loop ns m facc ji =
 mv_save_state path st = float_arr_to_f32_file path st mp_state
 mv_load_state path st = float_arr_from_f32_file path st mp_state
 
+
+-- ── per-surface gasdynamic z-forces on the SOLVER's pressure (2026-09-05) ──
+-- stress_diag's sd_pressure_surfaces reads (gamma-1) e_int, which under
+-- the Saha EOS books ionization energy as pressure (cathode tip 5x, exit
+-- 3.5x, anode inner face 10% on the free-cathode plateau; audit note
+-- notes/audit_2026-09-05.md finding 6). Same slot layout [BP, CT, AIF,
+-- AOF, OUT], same first-order cell-centre p, but through mv_pressure.
+-- Selftest check 42 locks it against (1 + alpha) n k T A on a hot row.
+mv_p_cell st m j i acc =
+  let k = j * mp_nz + i
+  if arr_get m k == 0 then
+    let p = 1.0 * mv_pressure st j i
+    let da = mv_tau * mp_r_of j * mp_dr
+    let mb = arr_get m (j * mp_nz + i - 1)
+    let _ = if mb == 5 then float_arr_set acc 0 (float_arr_get acc 0 + p * da)
+      else if mb == 6 then float_arr_set acc 0 (float_arr_get acc 0 + p * da)
+      else if mb == 1 then float_arr_set acc 1 (float_arr_get acc 1 + p * da)
+      else if mb == 2 then float_arr_set acc 3 (float_arr_get acc 3 + p * da)
+      else 0
+    let mt = arr_get m (j * mp_nz + i + 1)
+    if mt == 2 then float_arr_set acc 2 (float_arr_get acc 2 - p * da)
+    else if mt == 7 then float_arr_set acc 4 (float_arr_get acc 4 - p * da)
+    else 0
+  else 0
+
+mv_p_loop st m ji acc =
+  if ji >= mp_nrnz then 0
+  else
+    let j = ji / mp_nz
+    let i = ji % mp_nz
+    let ok1 = if j >= 1 then j <= mp_nrm2 else false
+    let ok = if ok1 then (if i >= 1 then i <= mp_nzm2 else false) else false
+    let _ = if ok then mv_p_cell st m j i acc else 0
+    mv_p_loop st m (ji + 1) acc
+
+mv_pressure_surfaces st m =
+  let acc = float_arr_new 5 0.0
+  let _ = mv_p_loop st m 0 acc
+  acc
+
+-- ── energy bookkeeping (2026-09-05, diagnostics before optimization) ──
+-- scr slot scr_dme accumulates the Joules of magnetic energy the implicit
+-- resistive sweeps add to en (the exact pairing in mv_diff_write), so the
+-- runner can print the resistive step's net delivery P_impl next to the
+-- Ohmic counter and the wall sink. Selftest check 43 locks it against
+-- the sweeps' actual change of sum(B^2/2mu0 dV).
+scr_dme = 55641
+
+mv_total_energy st m =
+  let acc = float_arr_new 1 0.0
+  let _ = mv_en_loop st m 0 acc
+  float_arr_get acc 0
+
+mv_en_loop st m ji acc =
+  if ji >= mp_nrnz then 0
+  else
+    let _ = if arr_get m ji == 0 then
+        let e = float_arr_get st (3 * mp_nrnz + ji)
+        float_arr_set acc 0 (float_arr_get acc 0 + e * mv_tau * mp_r_of (ji / mp_nz) * mp_dr * mp_dz)
+      else 0
+    mv_en_loop st m (ji + 1) acc
+
 -- ── mass bookkeeping (the conservation gate's currency) ──
 mv_tau = 6.283185307179586
 
@@ -1197,6 +1665,7 @@ mv_total_mass st m =
 mv_bmass_face st m acc dt j i dj di =
   let mk = arr_get m ((j + dj) * mp_nz + i + di)
   if mk == 0 then 0.0
+  else if mv_is_corner_face j i dj di then 0.0
   else if mk == 6 then
     -- prescribed inlet face (mv_face_zin): the scheme delivers exactly
     -- rho_in v_in through it, no ghost term and no diffusive term
@@ -1204,6 +1673,39 @@ mv_bmass_face st m acc dt j i dj di =
     let r = mp_r_of j
     let rate = rho_in * in_v * mv_tau * r * mp_dr
     float_arr_set acc 0 (float_arr_get acc 0 + rate)
+  else if mk == 8 then
+    -- open radial boundary (mv_face_rout): same rule with r as normal
+    let mrc = mp_get st mp_f_mr j i
+    let rf = mp_r_of j + 0.5 * mp_dr
+    if mrc > 0.0 then
+      let ex = float_arr_new 4 0.0
+      let _ = mv_out_state st j i mp_f_mr ex
+      let rate = 0.0 - float_arr_get ex 0 * float_arr_get ex 1 * mv_tau * rf * mp_dz
+      float_arr_set acc 0 (float_arr_get acc 0 + rate)
+    else
+      let rc = mp_get st mp_f_rho j i
+      let rg = mp_get st mp_f_rho (j + 1) i
+      let fc = mp_get st mp_f_mr j i
+      let fg = mp_get st mp_f_mr (j + 1) i
+      let fh = 0.5 * (fc + fg) - (mp_dr / (4.0 * dt)) * (rg - rc)
+      float_arr_set acc 0 (float_arr_get acc 0 - fh * mv_tau * rf * mp_dz)
+  else if mk == 7 then
+    -- exit face (mv_face_zout, 2026-09-05): outflow carries the choked /
+    -- expanded face state, no jump; backflow keeps the pair form
+    let mzc = mp_get st mp_f_mz j i
+    if mzc > 0.0 then
+      let ex = float_arr_new 4 0.0
+      let _ = mv_exit_state st j i ex
+      let rate = 0.0 - float_arr_get ex 0 * float_arr_get ex 1 * mv_tau * mp_r_of j * mp_dr
+      float_arr_set acc 0 (float_arr_get acc 0 + rate)
+    else
+      let r = mp_r_of j
+      let rc = mp_get st mp_f_rho j i
+      let rg = mp_get st mp_f_rho j (i + 1)
+      let fc = mp_get st mp_f_mz j i
+      let fg = mp_get st mp_f_mz j (i + 1)
+      let fh = 0.5 * (fc + fg) - (mp_dz / (4.0 * dt)) * (rg - rc)
+      float_arr_set acc 0 (float_arr_get acc 0 - fh * mv_tau * r * mp_dr)
   else
     let r = mp_r_of j
     let rc = mp_get st mp_f_rho j i
@@ -1259,6 +1761,14 @@ mv_inlet_rate st m dt =
   let _ = mv_inlet_loop st m acc dt 0
   float_arr_get acc 0
 
+-- corner face values (see the corner-ghost block) from btp into scr
+mv_load_corner btp scr =
+  let _ = float_arr_set scr scr_cflag (float_arr_get btp 0)
+  let _ = float_arr_set scr scr_cbt_cath (float_arr_get btp 4)
+  let _ = float_arr_set scr scr_cbt_aif (float_arr_get btp 2)
+  let _ = float_arr_set scr scr_aflag (float_arr_get btp 1)
+  float_arr_set scr scr_cbt_aof (float_arr_get btp 3)
+
 -- ── one full step ──
 -- Order (Lie splitting): eta cache from step-start e_int (exact through
 -- the sweeps: field transport preserves e_int), implicit resistive
@@ -1266,17 +1776,30 @@ mv_inlet_rate st m dt =
 -- (exact for the whole hyperbolic phase), hyperbolic st -> ns
 -- (+ explicit Hall), floor. ns and scratch are caller-owned and reused
 -- (no per-step allocation; the caller double-buffers st <-> ns).
--- fb: 42-float flux scratch (see mv_lxf_field layout). scr: one 55641-float array carved by offset
+-- fb: 42-float flux scratch (see mv_lxf_field layout). scr: one 55646-float array carved by offset
 -- (er 0, ez +13780, parr +27560, fmass 41340, tridiagonal lanes
--- 41341..41860, eta +41861).
+-- 41341..41860, eta +41861, dme 55641, corner face values 55642..55645,
+-- free-anode flag 55646).
+-- Split (2026-09-05): the resistive phase (in place on st) and the
+-- hyperbolic phase (st -> ns) are callable separately, because the exit
+-- face state now depends on p (mv_exit_state), so the mass gate and the
+-- massaudit must read the boundary rate on the state the hyperbolic
+-- phase actually sees (after the sweeps, heat and sink changed en).
 mv_step st ns btp m fb scr dt =
+  let _ = mv_step_res st btp m fb scr dt
+  mv_step_hyp st ns btp m fb scr dt
+
+mv_step_res st btp m fb scr dt =
   let _ = mv_eta_loop st scr 0
   let _ = mv_zsweep st btp m scr dt 1
   let _ = mv_rsweep st btp m scr dt 1
   let _ = mv_heat_loop st m scr fb dt 0
-  let _ = mv_wall_loop st m fb dt 0
+  mv_wall_loop st m fb dt 0
+
+mv_step_hyp st ns btp m fb scr dt =
   let _ = mv_apply_ghosts st btp m
   let _ = mv_parr_loop st scr 0
+  let _ = mv_load_corner btp scr
   let cr = dt / (2.0 * mp_dr)
   let cz = dt / (2.0 * mp_dz)
   let _ = mv_lxf_loop st ns m cr cz fb scr 0

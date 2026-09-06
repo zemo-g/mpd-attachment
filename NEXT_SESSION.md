@@ -13,6 +13,113 @@ dynamic range, T_mean 3708 -> 8621 K, alpha_mean 0.0003 -> 0.051, peak
 4.2e-3 kg/s, not 6e-3, and is void** (metered inlet clipped; see below).
 The chain has been restarted from `saha_capped6g` as `out/phase2_pf1.log`.
 
+## 2026-09-05 21:30: new model judged at seg 3; cap sensitivity RUNNING
+
+Seven fixes shipped and verified (see the 2026-09-05 entry in
+notes/pion_chain_log.md; selftest 50/50; all UNCOMMITTED, commit only
+when the owner asks). Chain /tmp/run_new_fromF (cfl 0.30, 3 segs from
+the free-anode smoke) judged at seg 3: numerics clean (no exit
+cooling, no solid-face B/energy flux, no corner leaks, penalties -3.0
+N, P_impl +6.9 kW, gate 8.6e-9) but the PHYSICS gap is unchanged:
+thrust 19.2 vs 24.0 +- 0.9, wall 1242 vs 465 (slow drain -1.3%/seg
+toward ~1150-1200), anode inner-face push -8.1 N (grew), 40% of the
+Ohmic power in eta-capped cold gas. Free-anode split: inner 2.45 /
+bore 3.78 / OUTER 1.77 kA vs Rudolph 3.7 / 4.3 / 0. cfl 0.15 twin
+/tmp/run_new15_fromF at matched time: mass and V_arc invariant to
+0.5%, wall +2.4%, thrust -3.8%, tip probe -10%, P_wall +10.5%, root
+probe (20,1) -57% (table in the log entry).
+
+CAP TEST seg 1 (22:20): the cap WAS the reservoir. pwall 1242 -> 789,
+tip 1490 -> 2639, profile rms 0.57 -> 0.26, anode-face push -8.1 ->
+-5.1 N, Ohmic in r > 5.1 cm 10% -> 0%, V_arc 20.4 -> 24.8; chamber
+refilling (+5%/seg, exit 4.1 g/s) so thrust 16.9 is a transient. Segs
+2-5 queued (two chain_dir.sh drivers back to back, done ~01:45). Judge
+the plateau: pwall, thrust, anode split, capped-cell fraction; then the
+direction is an UNCAPPED cold-gas resistivity (with the alpha floor
+1e-8 as the other half of the knob), not the sheath. Details in the
+log entry "22:30".
+
+BOTH SENSITIVITIES JUDGED 02:00 (log entry "2026-09-06 02:00", one
+table): cap 1e-2 gives Cory's profile SHAPE but the outer gas cools,
+thickens and the chamber refills toward the floor (wall 911 and
+rising at seg 4); t_wall 1500 K makes the outer gas hotter at the same
+density, wall 1630, push -9.6 N. Neither lever touches the outer gas
+DENSITY (40% of the mass at 3-4e-3 kg/m^3, 10x the exit density): the
+ring-injected 46% of mdot is never entrained. Cory's low wall needs a
+thin conducting outer plasma = ionisation/entrainment physics of the
+outer flow, not a BC. Owner decides: commit the day's work (yes/no),
+and the direction (outer-flow ionisation model vs sheath vs report as
+is). No further runs queued after cap seg 5 (~02:25).
+
+CAP TEST seg 2 (23:20): chamber filling with COLD dense gas at flat
+pressure (wall 792, exit passing 4 g/s); see the log entry "23:30" for
+the floor arithmetic (a choked 6 g/s exit at 12 kK pins the chamber at
+~1.1-1.2 kPa; Cory's low wall needs a pinch gradient out to r_ch, i.e.
+current in a THIN outer plasma). RUNNING since 23:30, in parallel:
+/tmp/run_twall_fromS3 (binary /tmp/p2twall, t_wall 1500 K, 2 segs
+from the new-model ckpt_seg3, Monitor armed): does a hot wall keep the
+outer gas ionised and thin? Judge both tests on one table in the
+morning; both drivers are chain_dir.sh, nothing else running.
+
+RUNNING since 21:18: /tmp/run_cap_fromS3 (binary /tmp/p2cap built from
+a repo copy with eta_cap = 1e-2; 2 segments from
+/tmp/run_new_fromF/out/ckpt_seg3.f32), Monitor armed. Judge: does the
+reservoir cool and the wall fall when cold gas conducts 10x less
+(read pwall, the anode-face pinching, the capped-cell dissipation
+fraction from the closure tool, the free-anode split)? If yes, the next
+physics is an uncapped cold-gas resistivity; if no, the sheath. Then
+the owner decides on commit and direction.
+
+## 2026-09-05 afternoon: how the fixes were shipped
+
+
+Owner: "work through and resolve them ... in succession, only move
+forward upon confirmation of accuracy and consistency". Seven steps
+shipped, each gated by selftest (41 -> 50 checks), a smoke chained from
+the previous step's checkpoint, and the massaudit gate (all ~1e-9):
+Saha pinching + thrust target + energy counters; choked/upwind exit
+face; solid faces carry no B/energy; corner ghosts per face; open
+radial boundary past the anode (mask 8); transverse Spitzer +
+sigma_en(T) + kappa_perp; FREE ANODE. Full account in
+notes/pion_chain_log.md "2026-09-05". All UNCOMMITTED; commit only
+when the owner asks. cfl 0.15 on the OLD model was NOT invariant
+(10-16%): table in the log entry.
+
+RUNNING since 17:43: /tmp/run_new_fromF (binary /tmp/p2new, cfl 0.30)
+and /tmp/run_new15_fromF (/tmp/p2new15, cfl 0.15), 3 segments each
+from /tmp/run_smoke_F/out/phase2_ckpt.f32 (the free-anode smoke state,
+itself chained seg16 -> D -> W -> K -> E -> C -> F smokes). Judge: (1)
+plateau on the step line (mass, pwall, mdot_out + mdot_side, V_arc,
+P_impl); (2) invariance: cfl15 seg 2 vs cfl30 seg 1 (matched physical
+time) and seg 3 vs seg 3 on wall / tip / thrust / tip share / anode
+split; (3) massaudit (rebuild /tmp/p2a_new from the repo: it sets both
+free flags), tools/audit_closure_2026-09-05.py on the state csv (note:
+its eta and exit-face logic are the audit-day versions), attachment_map,
+render, compare_bp_profile; (4) anode split: I_enc along the bore
+(j = 102, i = 83..90) and across the inner/outer faces from bt; (5)
+write the log entry and this block; then the owner decides on commit.
+
+
+## COLD AUDIT 2026-09-05 (owner greenlit; no solver changes): read notes/audit_2026-09-05.md
+
+Line-by-line read plus an exact scheme-flux closure on the seg 16
+plateau (tool: tools/audit_closure_2026-09-05.py; mass and z-momentum
+close against the massaudit and the log). Five findings, ranked:
+(1) the thrust deficit is the outer reservoir pushing on the anode's
+upstream face (-6.9 N vs ~-1.9 in Choueiri's split; backplate force is
+right), fed by the prescribed anode inner-face share and a FICTITIOUS
+300 K wall downstream of the anode (mask 4 at all z; 13.8 kW of sink);
+(2) the exit chokes by numerical cooling (13 cells at 30-100 K, 16 kW
+through the exit face, sonic line pinned at the exit plane);
+(3) first-order LxF at solid faces: 4.75 N wall penalty, 0.5 T m^3/s
+of B pumped through the free-cathode barrel, never cfl-tested here;
+(4) Spitzer PARALLEL resistivity in a j-perp-B arc with Hall off while
+omega_ce tau_e > 1 in 72% of the volume; (5) tip 2104 and root 1662 are
+inferred, not measured; thrust target is 24.0 +- 1.3 N; the pinching
+diagnostic uses the ideal EOS. Suggested order A-G in the note, cheapest
+first: cfl 0.15 x 3 segs from ckpt_seg16, energy counters, eta_perp(x),
+exit face, open the downstream boundary, free the anode. Owner decides.
+
 ## JUDGED 2026-09-04 00:30: free cathode split (read this first)
 
 Full account: notes/pion_chain_log.md "2026-09-04 00:30". The split,
