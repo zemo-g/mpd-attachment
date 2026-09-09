@@ -242,3 +242,9 @@ Regenerate the digitized points (needs poppler + py311 PIL/numpy):
 - `rail/phase0_scoreboard.rail` / `rail/phase1_baselines.rail` - runners
 - `rail/selftest.rail` - 26 transcription/data/scoreboard/model/phase2 guards
 - `out/` - generated CSVs (rebuilt by the runners)
+
+## License
+
+PolyForm Noncommercial 1.0.0 (see `LICENSE`): free for research, study,
+and any noncommercial purpose. Commercial use needs a separate license
+from the licensor.
